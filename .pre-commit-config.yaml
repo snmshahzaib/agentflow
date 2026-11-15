@@ -1,0 +1,76 @@
+# Local commit-time gate for AgentFlow.
+#
+#   install once:  uv tool install pre-commit && pre-commit install
+#   run manually:  pre-commit run --all-files
+#
+# Never bypass these with --no-verify. If a hook blocks a commit, fix the
+# cause. See docs/security.md.
+default_install_hook_types: [pre-commit, pre-push]
+
+repos:
+  # ---- Secret scanning (the non-negotiable gate) ------------------------
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+        name: gitleaks (secret scan)
+
+  # ---- Generic hygiene --------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: detect-private-key
+      - id: check-added-large-files
+        args: ["--maxkb=512"]
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+        exclude: ^frontend/(tsconfig|tsconfig\..*)\.json$
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: ["--markdown-linebreak-ext=md"]
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+
+  # ---- Python lint + format --------------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.1
+    hooks:
+      - id: ruff
+        name: ruff (lint)
+        args: ["--fix", "--exit-non-zero-on-fix"]
+        files: ^backend/
+      - id: ruff-format
+        name: ruff (format)
+        files: ^backend/
+
+  # ---- Project-specific guards -----------------------------------------
+  - repo: local
+    hooks:
+      - id: no-env-files
+        name: refuse staged .env files
+        entry: scripts/guard-no-env-files.sh
+        language: script
+        pass_filenames: true
+
+      - id: no-hardcoded-model-ids
+        name: refuse hardcoded model IDs outside the LLM adapter
+        entry: scripts/guard-no-model-ids.sh
+        language: script
+        pass_filenames: true
+        files: ^backend/app/.*\.py$
+
+      - id: mypy
+        name: mypy (backend types)
+        entry: bash -c 'cd backend && uv run mypy app'
+        language: system
+        pass_filenames: false
+        files: ^backend/app/.*\.py$
+
+      - id: import-linter
+        name: import-linter (architecture boundaries)
+        entry: bash -c 'cd backend && uv run lint-imports'
+        language: system
+        pass_filenames: false
+        files: ^backend/(app/.*\.py|\.importlinter)$

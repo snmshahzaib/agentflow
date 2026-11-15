@@ -1,0 +1,29 @@
+# Gitleaks configuration for AgentFlow.
+# Runs locally via the pre-commit hook and in GitHub Actions on every push/PR.
+# Keep the default rule set and add only narrowly-scoped allowlists for
+# documented placeholders — never broaden this to silence a real finding.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Documented placeholders in tracked *.example configuration files"
+paths = [
+  '''\.env\.example$''',
+  '''\.env\.[a-z]+\.example$''',
+  '''frontend/\.env\.example$''',
+]
+regexes = [
+  '''__SET_[A-Z0-9_]*__''',
+  '''__GENERATE_WITH_[A-Za-z0-9_]*__''',
+  '''__REPLACE_[A-Z0-9_]*__''',
+]
+
+[[allowlists]]
+description = "Local development credentials in compose defaults are not secrets"
+paths = [
+  '''docker-compose\.yml$''',
+]
+regexes = [
+  '''\$\{[A-Z_]+(:-[^}]*)?\}''',
+]

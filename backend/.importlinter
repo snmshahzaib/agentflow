@@ -1,0 +1,57 @@
+[importlinter]
+root_packages =
+    app
+include_external_packages = True
+
+[importlinter:contract:layers]
+name = Layered architecture
+type = layers
+layers =
+    app.api | app.workers | app.graph
+    app.services
+    app.db
+    app.domain
+exhaustive = False
+
+[importlinter:contract:domain-is-framework-free]
+name = Domain is framework-free
+type = forbidden
+source_modules = app.domain
+forbidden_modules =
+    fastapi
+    sqlalchemy
+    arq
+    langgraph
+    openai
+    httpx
+    redis
+    app.db
+    app.api
+    app.services
+    app.adapters
+    app.graph
+    app.workers
+
+[importlinter:contract:adapters-depend-only-on-domain-and-core]
+name = Adapters depend only on domain and core
+type = forbidden
+source_modules = app.adapters
+forbidden_modules =
+    app.api
+    app.db
+    app.services
+    app.graph
+    app.workers
+
+[importlinter:contract:vendor-sdks-are-confined-to-adapters]
+name = Vendor SDKs are confined to adapters
+type = forbidden
+source_modules =
+    app.api
+    app.db
+    app.domain
+    app.services
+    app.graph
+    app.workers
+forbidden_modules =
+    openai
