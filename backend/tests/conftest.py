@@ -39,3 +39,21 @@ def _clear_settings_cache() -> Iterator[None]:
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove every AgentFlow setting from the ambient environment.
+
+    ``_env_file=None`` only disables dotenv loading; pydantic-settings still
+    reads real environment variables. CI exports DATABASE_URL and friends for
+    the integration tests, which silently overrode values a unit test had
+    passed explicitly. Stripping the whole field set makes each test state its
+    own configuration and nothing else.
+
+    Integration tests that need the real database ask for it through a
+    fixture, rather than relying on an ambient variable.
+    """
+    for field in Settings.model_fields:
+        monkeypatch.delenv(field.upper(), raising=False)
+        monkeypatch.delenv(field.lower(), raising=False)

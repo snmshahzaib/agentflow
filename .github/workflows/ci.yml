@@ -120,5 +120,8 @@ jobs:
       - name: Audit Python dependencies
         working-directory: backend
         run: |
-          uv export --no-hashes --format requirements-txt > /tmp/requirements.txt
+          # --no-emit-project: the local package is not on PyPI and is not a
+          # third-party dependency, so auditing it is meaningless.
+          uv export --no-hashes --no-emit-project --format requirements-txt \
+            > /tmp/requirements.txt
           uvx pip-audit --requirement /tmp/requirements.txt --strict
