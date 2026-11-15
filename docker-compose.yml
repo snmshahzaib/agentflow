@@ -1,0 +1,136 @@
+# AgentFlow — full local stack.
+#
+#   cp .env.example .env && docker compose up --build
+#
+# Five services: PostgreSQL, Redis, a one-shot migration job, the API and the
+# worker, plus the static frontend behind nginx. The API and worker run the
+# same image and differ only by command (ADR-001).
+#
+# No credential is hardcoded here: every value comes from .env, which is
+# gitignored. The defaults below exist so the stack starts for a first-time
+# reader, and are local-development values only.
+
+name: agentflow
+
+x-backend-env: &backend-env
+  APP_ENV: ${APP_ENV:-dev}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  LOG_FORMAT: ${LOG_FORMAT:-json}
+  CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:8080}
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-agentflow}:${POSTGRES_PASSWORD:-agentflow}@postgres:5432/${POSTGRES_DB:-agentflow}
+  REDIS_URL: redis://redis:6379/0
+  LLM_PROVIDER: ${LLM_PROVIDER:-stub}
+  LLM_BASE_URL: ${LLM_BASE_URL:-https://openrouter.ai/api/v1}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  LLM_MODEL_DEFAULT: ${LLM_MODEL_DEFAULT:-}
+  LLM_MODEL_PLANNER: ${LLM_MODEL_PLANNER:-}
+  LLM_MODEL_ANALYST: ${LLM_MODEL_ANALYST:-}
+  LLM_MODEL_CITATION_CHECK: ${LLM_MODEL_CITATION_CHECK:-}
+  LLM_MODEL_DRAFT: ${LLM_MODEL_DRAFT:-}
+  LLM_FALLBACK_MODELS: ${LLM_FALLBACK_MODELS:-}
+  LLM_REQUIRE_STRUCTURED_OUTPUT: ${LLM_REQUIRE_STRUCTURED_OUTPUT:-true}
+  LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-90}
+  LLM_MAX_ATTEMPTS: ${LLM_MAX_ATTEMPTS:-3}
+  LLM_DATA_COLLECTION: ${LLM_DATA_COLLECTION:-deny}
+  LLM_MAX_TOKENS_PER_TASK: ${LLM_MAX_TOKENS_PER_TASK:-120000}
+  LLM_MAX_CALLS_PER_TASK: ${LLM_MAX_CALLS_PER_TASK:-12}
+  SEARCH_PROVIDER: ${SEARCH_PROVIDER:-fixture}
+  SEARCH_API_KEY: ${SEARCH_API_KEY:-}
+  MAX_SUBTASKS: ${MAX_SUBTASKS:-4}
+  WORKER_MAX_CONCURRENT_TASKS: ${WORKER_MAX_CONCURRENT_TASKS:-2}
+  DEMO_DAILY_BUDGET_USD: ${DEMO_DAILY_BUDGET_USD:-2.00}
+  DEMO_ACCESS_CODE: ${DEMO_ACCESS_CODE:-}
+  SESSION_SECRET: ${SESSION_SECRET:-dev-only-insecure-session-secret-change-me}
+  DATA_RETENTION_DAYS: ${DATA_RETENTION_DAYS:-7}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agentflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentflow}
+      POSTGRES_DB: ${POSTGRES_DB:-agentflow}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentflow} -d ${POSTGRES_DB:-agentflow}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "${REDIS_HOST_PORT:-6380}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # One-shot: runs migrations to completion, then exits. The API and worker
+  # wait for it, so neither can start against an un-migrated database.
+  migrate:
+    build:
+      context: ./backend
+    environment: *backend-env
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment: *backend-env
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment: *backend-env
+    command: ["arq", "app.workers.settings.WorkerSettings"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # The worker has no inbound port, so liveness is "the process is up";
+    # a crashed worker is restarted and its task retried.
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'arq app.workers' > /dev/null || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_started
+
+volumes:
+  pgdata:
