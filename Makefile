@@ -49,9 +49,17 @@ types: ## Type-check the backend
 boundaries: ## Verify architecture import contracts
 	cd $(BACKEND) && uv run lint-imports
 
-secrets: ## Scan the working tree and git history for secrets
-	gitleaks dir . --config .gitleaks.toml --redact --no-banner
-	@git rev-parse --verify HEAD >/dev/null 2>&1 && gitleaks git . --config .gitleaks.toml --redact --no-banner || echo "  (no commits yet — history scan skipped)"
+secrets: ## Scan everything that could reach the repository for secrets
+	@# Scans git history and staged content -- i.e. everything that can reach
+	@# the remote. A working-tree scan is deliberately NOT run here: it flags a
+	@# developer's own untracked .env, which is already blocked by .gitignore
+	@# and by the pre-commit hook, and a gate that always fails trains people to
+	@# ignore it. CI runs the working-tree scan on a clean checkout, where it is
+	@# equivalent to scanning tracked files.
+	@git rev-parse --verify HEAD >/dev/null 2>&1 \
+		&& gitleaks git . --config .gitleaks.toml --redact --no-banner \
+		|| echo "  (no commits yet -- history scan skipped)"
+	gitleaks git . --staged --config .gitleaks.toml --redact --no-banner
 
 verify: lint types boundaries secrets test ## The honest pre-claim gate — run before reporting progress
 	@echo ""

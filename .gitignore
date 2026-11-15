@@ -85,6 +85,7 @@ build/
 coverage/
 *.local
 .eslintcache
+*.tsbuildinfo
 playwright-report/
 test-results/
 blob-report/

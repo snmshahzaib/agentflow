@@ -99,7 +99,7 @@ variables and validated against the provider catalogue at startup — see
 
 | Milestone | Scope | Status |
 |---|---|---|
-| M1 | Walking skeleton + LLM config spine | **in progress** |
+| M1 | Walking skeleton + LLM config spine | **complete — awaiting review** |
 | M2 | Fixture vertical slice, approval gate, restart recovery | not started |
 | M3 | Live OpenRouter gateway, capability negotiation, cost ledger | not started |
 | M4 | Tavily search, URL safety, rate limits, retention | not started |
@@ -107,6 +107,20 @@ variables and validated against the provider catalogue at startup — see
 | M6 | Verification, documentation, evaluation harness | not started |
 | M7 | Deployment and public repository | not started |
 | M8 | Completion report | not started |
+
+## What exists today (end of M1)
+
+Working and verified end to end in Docker: task submission with idempotency, durable
+execution by a separate worker process, the five-node graph recording a workflow timeline,
+the human approval gate (`interrupt()` ends the job — the pause costs no running compute),
+resume from a Postgres checkpoint in a separate job, session-scoped access, the full error
+envelope with correlation ids, and the provider-agnostic LLM gateway with capability
+validation and cross-vendor fallback.
+
+**The five graph nodes are skeletons.** They record the timeline and prove the durable
+execution path, but they do not yet plan, retrieve, analyse, check citations or draft. Every
+step row they write is marked `skeleton` so their output cannot be mistaken for research.
+Real node implementations, sources, reports, claims and export arrive in M2–M4.
 
 ## Quick start
 
@@ -127,6 +141,20 @@ docker compose up --build
 AgentFlow runs with **no API keys at all** in its default configuration: `LLM_PROVIDER=stub`
 and `SEARCH_PROVIDER=fixture` give a fully deterministic offline demo. Fixture and stub output
 is labelled as such in the UI and is never presented as live AI.
+
+Every published host port is configurable in `.env` (`API_PORT`, `FRONTEND_PORT`,
+`POSTGRES_HOST_PORT`, `REDIS_HOST_PORT`), which matters if you already run Postgres or Redis
+locally — a clash shows up as `Bind for 127.0.0.1:5433 failed: port is already allocated`.
+
+Verify the whole stack end to end:
+
+```bash
+scripts/smoke-test.sh http://localhost:8080
+```
+
+It submits a task, waits for the approval gate, approves it, and checks that idempotency,
+double-approval rejection and session scoping all behave. It prints `SMOKE TEST PASSED` or
+exits non-zero.
 
 See [`docs/development.md`](docs/development.md) for running the API, worker and frontend
 outside Docker, and [`docs/testing.md`](docs/testing.md) for the test commands.

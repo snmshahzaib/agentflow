@@ -83,4 +83,8 @@ class WorkerSettings:
     max_tries = 3
     # Finish the current node and checkpoint before exiting on SIGTERM.
     handle_signals = True
+    # Refresh the heartbeat key often enough that `arq --check` -- which the
+    # container healthcheck runs -- sees a fresh value. arq's default is an
+    # hour, which would report a healthy worker as unhealthy.
+    health_check_interval = 15
     redis_settings = RedisSettings.from_dsn(get_settings().redis_url)

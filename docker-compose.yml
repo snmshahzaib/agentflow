@@ -113,14 +113,18 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    # The worker has no inbound port, so liveness is "the process is up";
-    # a crashed worker is restarted and its task retried.
+    # The worker has no inbound port. `arq --check` reads the worker's own
+    # heartbeat key from Redis, so this proves the worker is consuming jobs
+    # rather than merely that a process with a matching name exists.
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'arq app.workers' > /dev/null || exit 1"]
-      interval: 20s
-      timeout: 5s
+      test: ["CMD", "arq", "--check", "app.workers.settings.WorkerSettings"]
+      # Generous timeout: the check starts a fresh Python interpreter and
+      # connects to Redis, which exceeded a 10s budget on a cold start and
+      # made a healthy worker flap.
+      interval: 30s
+      timeout: 20s
       retries: 3
-      start_period: 20s
+      start_period: 45s
 
   frontend:
     build:
