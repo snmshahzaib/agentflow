@@ -151,11 +151,16 @@ class TestDerivedUrls:
         s = make_settings(database_url="postgresql+asyncpg://x:y@host:1/z")
         assert s.sqlalchemy_url == "postgresql+asyncpg://x:y@host:1/z"
 
-    def test_checkpointer_and_alembic_use_a_sync_driver(self) -> None:
-        """LangGraph's Postgres saver and Alembic both need psycopg, not asyncpg."""
+    def test_checkpointer_gets_a_raw_dsn_and_alembic_a_psycopg_url(self) -> None:
+        """These are different strings and conflating them breaks both.
+
+        LangGraph's checkpointer takes a libpq DSN with no driver suffix;
+        Alembic needs a SQLAlchemy URL naming psycopg 3, because a bare
+        postgresql:// URL resolves to psycopg2 which is not installed.
+        """
         s = make_settings(database_url="postgresql+asyncpg://u:p@h:5432/d")
-        assert s.psycopg_url == "postgresql://u:p@h:5432/d"
-        assert s.alembic_url == s.psycopg_url
+        assert s.checkpointer_dsn == "postgresql://u:p@h:5432/d"
+        assert s.alembic_url == "postgresql+psycopg://u:p@h:5432/d"
 
     def test_cors_origins_are_split_and_trimmed(self) -> None:
         s = make_settings(cors_allow_origins="http://a.test, http://b.test ,")

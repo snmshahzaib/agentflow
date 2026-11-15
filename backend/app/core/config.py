@@ -159,15 +159,23 @@ class Settings(BaseSettings):
         )
 
     @property
-    def psycopg_url(self) -> str:
-        """Sync psycopg DSN, required by the LangGraph Postgres checkpointer."""
-        url = self.sqlalchemy_url
-        return url.replace("postgresql+asyncpg://", "postgresql://", 1)
+    def checkpointer_dsn(self) -> str:
+        """libpq connection string for LangGraph's Postgres checkpointer.
+
+        The checkpointer takes a raw DSN, not a SQLAlchemy URL, so this
+        deliberately carries no ``+driver`` suffix.
+        """
+        return self.sqlalchemy_url.replace("postgresql+asyncpg://", "postgresql://", 1)
 
     @property
     def alembic_url(self) -> str:
-        """DSN for migrations, which run synchronously."""
-        return self.psycopg_url
+        """Sync SQLAlchemy URL for migrations.
+
+        Migrations run synchronously on psycopg 3. The ``+psycopg`` suffix is
+        required: a bare ``postgresql://`` URL resolves to psycopg2, which
+        this project does not install.
+        """
+        return self.sqlalchemy_url.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1)
 
     @property
     def cors_origins(self) -> list[str]:
