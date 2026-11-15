@@ -105,6 +105,41 @@ jobs:
       - name: Tests
         run: uv run pytest --cov=app --cov-report=term-missing
 
+  frontend:
+    name: Frontend (lint, types, tests, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies (locked)
+        run: pnpm install --frozen-lockfile
+
+      - name: ESLint
+        run: pnpm lint
+
+      - name: TypeScript
+        run: pnpm typecheck
+
+      - name: Tests
+        run: pnpm test
+
+      - name: Production build
+        run: pnpm build
+
   dependency-audit:
     name: Dependency audit (advisory)
     runs-on: ubuntu-latest
@@ -117,6 +152,14 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
       - name: Audit Python dependencies
         working-directory: backend
         run: |
@@ -125,3 +168,7 @@ jobs:
           uv export --no-hashes --no-emit-project --format requirements-txt \
             > /tmp/requirements.txt
           uvx pip-audit --requirement /tmp/requirements.txt --strict
+
+      - name: Audit JavaScript dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile && pnpm audit --audit-level high
