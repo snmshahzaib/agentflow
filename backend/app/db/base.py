@@ -24,6 +24,13 @@ NAMING_CONVENTION = {
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
 
+    # Fetch server-generated values (uuid primary keys, created_at/updated_at)
+    # with RETURNING at flush time. Without this, reading one of those
+    # attributes after a flush triggers a lazy refresh, which raises
+    # MissingGreenlet under async SQLAlchemy as soon as a response serialiser
+    # touches it.
+    __mapper_args__ = {"eager_defaults": True}  # noqa: RUF012  (SQLAlchemy convention)
+
 
 class TimestampMixin:
     """``created_at`` / ``updated_at`` maintained by the database.

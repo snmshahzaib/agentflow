@@ -18,12 +18,18 @@ single-flight Redis lock, so there is exactly one writer per task. See ADR-001.
 ## Layers
 
 ```
-app.api | app.workers | app.graph     entrypoints and orchestration
-        app.services                  use cases, transaction boundaries
-        app.db                        SQLAlchemy models and queries
-        app.domain                    pure types and rules, framework-free
-app.adapters.{llm,search}             outbound ports; import domain/core only
+app.api | app.workers        entrypoints (peers; must not import each other)
+       app.graph             orchestration: the worker drives the graph
+       app.services          use cases, transaction boundaries
+       app.db                SQLAlchemy models and queries
+       app.domain            pure types and rules, framework-free
+app.adapters.{llm,search,queue}   outbound ports; import domain/core only
 ```
+
+`app.api` and `app.workers` are peers that may not import each other: the API
+enqueues work and the worker executes it, communicating through Redis and the
+database rather than in-process. `app.graph` sits below `app.workers` because
+the worker drives the graph, never the reverse.
 
 Enforced by `import-linter` contracts in `backend/.importlinter`, run in CI:
 

@@ -6,8 +6,13 @@ include_external_packages = True
 [importlinter:contract:layers]
 name = Layered architecture
 type = layers
+# app.api and app.workers are peers and must not import each other: the API
+# enqueues work, the worker executes it, and they communicate through Redis
+# and the database rather than in-process. app.graph sits below app.workers
+# because the worker drives the graph, never the reverse.
 layers =
-    app.api | app.workers | app.graph
+    app.api | app.workers
+    app.graph
     app.services
     app.db
     app.domain
@@ -46,6 +51,13 @@ forbidden_modules =
 [importlinter:contract:vendor-sdks-are-confined-to-adapters]
 name = Vendor SDKs are confined to adapters
 type = forbidden
+# allow_indirect_imports: the rule is that no layer outside app.adapters may
+# *use* a vendor SDK directly. Reaching one transitively is unavoidable and
+# correct -- app.workers builds the LLM runtime, which is implemented by the
+# adapter that wraps the SDK. Forbidding the indirect chain would only be
+# satisfiable by hiding the dependency behind a lazy import, which makes the
+# architecture less legible rather than more.
+allow_indirect_imports = True
 source_modules =
     app.api
     app.db

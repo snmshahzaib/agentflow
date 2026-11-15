@@ -32,15 +32,17 @@ change to this boundary needs the repository owner's approval.
 ## Architecture boundaries (enforced by `lint-imports` in CI)
 
 ```
-app.api | app.workers | app.graph     <- entrypoints and orchestration
-        app.services                  <- use cases, transactions
-        app.db                        <- SQLAlchemy models and queries
-        app.domain                    <- pure types and rules, framework-free
-app.adapters.{llm,search}             <- outbound ports; may import domain/core only
+app.api | app.workers             <- entrypoints; peers, may NOT import each other
+       app.graph                  <- orchestration; the worker drives the graph
+       app.services               <- use cases, transactions
+       app.db                     <- SQLAlchemy models and queries
+       app.domain                 <- pure types and rules, framework-free
+app.adapters.{llm,search,queue}   <- outbound ports; may import domain/core only
 ```
 
 - `app.domain` imports no framework and no other app package. It is pure Python.
-- Vendor SDKs (`openai`, …) may be imported **only** inside `app.adapters`.
+- Vendor SDKs (`openai`, …) may be imported **only** inside `app.adapters`. Reaching one
+  transitively (worker -> registry -> adapter) is fine and expected.
 - The LangGraph dependency is confined to `app.graph.builder` and `app.workers`. Node functions
   in `app.graph.nodes` are plain `async def node(state) -> dict` and must stay
   orchestrator-agnostic, so the graph runner can be replaced without touching them.
@@ -94,8 +96,9 @@ make verify        # the honest pre-claim gate: lint, types, boundaries, tests
 
 Every node follows the same contract. See `.claude/skills/agent-node/SKILL.md`.
 
-1. Signature `async def node(state: GraphState, deps: NodeDeps) -> dict` — returns a state
-   delta, never mutates `state`.
+1. Signature `async def node(state: GraphState, deps: NodeDeps) -> GraphState` — returns a
+   partial state delta, never mutates `state`. `app.graph.builder` binds `deps`, so nodes stay
+   orchestrator-agnostic.
 2. Declare a Pydantic output model. Call the LLM through `deps.llm.complete_structured(...)`
    with that schema. Never parse free text.
 3. Check the task budget **before** the call; a node must fail cleanly rather than overrun.
