@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from app.core.config import NODE_MODEL_ENV_VARS, Settings
 from app.domain.enums import LLMProvider, SearchMode
 from app.domain.nodes import LLM_NODES, NodeName
 from tests.conftest import make_settings
@@ -111,6 +112,20 @@ class TestModelResolution:
     def test_each_node_has_its_own_override(self, node: NodeName, field: str) -> None:
         s = make_settings(llm_model_default="vendor/model-default", **{field: "vendor/picked"})
         assert s.model_for_node(node) == "vendor/picked"
+
+    def test_every_mapped_env_var_corresponds_to_a_real_setting(self) -> None:
+        """Guards the bug this mapping was introduced to fix.
+
+        Validation error messages are generated from NODE_MODEL_ENV_VARS. If a
+        name here did not match a Settings field, the message would tell a
+        developer to set a variable that does nothing.
+        """
+        for node, env_var in NODE_MODEL_ENV_VARS.items():
+            assert node in LLM_NODES
+            assert env_var.lower() in Settings.model_fields, env_var
+
+    def test_every_llm_node_has_an_override_variable(self) -> None:
+        assert set(NODE_MODEL_ENV_VARS) == set(LLM_NODES)
 
     def test_blank_override_falls_back_to_the_default(self) -> None:
         s = make_settings(llm_model_default="vendor/model-default", llm_model_draft="  ")

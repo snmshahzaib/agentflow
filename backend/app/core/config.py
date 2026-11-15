@@ -10,6 +10,7 @@ clearing the cache (see ``tests/conftest.py``).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from functools import lru_cache
 from typing import Annotated, Literal
 
@@ -18,6 +19,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.domain.enums import DataCollectionPolicy, LLMProvider, SearchMode
 from app.domain.nodes import NodeName
+
+#: The environment variable that overrides each node's model. This mapping is
+#: authoritative: ``Settings`` reads its fields through it and validation
+#: error messages are generated from it, so a message can never name a
+#: variable that does not exist.
+NODE_MODEL_ENV_VARS: Mapping[NodeName, str] = {
+    NodeName.PLAN: "LLM_MODEL_PLANNER",
+    NodeName.ANALYSE: "LLM_MODEL_ANALYST",
+    NodeName.CITATION_CHECK: "LLM_MODEL_CITATION_CHECK",
+    NodeName.DRAFT: "LLM_MODEL_DRAFT",
+}
 
 #: Smallest context window AgentFlow will accept for any node. A research task
 #: can carry eight source excerpts plus a drafted report into a single call.
@@ -196,12 +208,8 @@ class Settings(BaseSettings):
 
         The only place in the codebase that decides which model runs where.
         """
-        override = {
-            NodeName.PLAN: self.llm_model_planner,
-            NodeName.ANALYSE: self.llm_model_analyst,
-            NodeName.CITATION_CHECK: self.llm_model_citation_check,
-            NodeName.DRAFT: self.llm_model_draft,
-        }.get(node)
+        env_var = NODE_MODEL_ENV_VARS.get(node)
+        override = getattr(self, env_var.lower(), None) if env_var else None
         # A blank or whitespace-only override falls back rather than resolving
         # to an empty model ID.
         return (override or "").strip() or self.llm_model_default.strip()
