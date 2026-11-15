@@ -61,16 +61,19 @@ repos:
         pass_filenames: true
         files: ^backend/app/.*\.py$
 
+      # Heavy checks run at commit time only; CI re-runs them on every push.
       - id: mypy
         name: mypy (backend types)
-        entry: bash -c 'cd backend && uv run mypy app'
-        language: system
+        entry: scripts/uv-run.sh mypy app
+        language: script
         pass_filenames: false
+        stages: [pre-commit]
         files: ^backend/app/.*\.py$
 
       - id: import-linter
         name: import-linter (architecture boundaries)
-        entry: bash -c 'cd backend && uv run lint-imports'
-        language: system
+        entry: scripts/uv-run.sh lint-imports
+        language: script
         pass_filenames: false
+        stages: [pre-commit]
         files: ^backend/(app/.*\.py|\.importlinter)$
