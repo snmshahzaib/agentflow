@@ -94,6 +94,10 @@ class Settings(BaseSettings):
     max_subtasks: Annotated[int, Field(ge=1, le=8)] = 4
     worker_max_concurrent_tasks: Annotated[int, Field(ge=1, le=32)] = 2
     node_max_attempts: Annotated[int, Field(ge=1, le=10)] = 3
+    #: How many times a reviewer may send a report back. Bounded because each
+    #: revision re-plans and re-retrieves, so an unbounded loop would be an
+    #: unbounded spend.
+    max_revision_rounds: Annotated[int, Field(ge=0, le=10)] = 3
     node_timeout_seconds: Annotated[float, Field(gt=0)] = 120.0
 
     # --- demo safety ----------------------------------------------------

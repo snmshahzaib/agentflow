@@ -12,15 +12,23 @@ import binascii
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, tuple_
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.queue.base import TaskQueue
 from app.core.config import Settings
 from app.core.logging import get_logger
-from app.db.models import ApprovalEvent, Report, ResearchTask, WorkflowStep
+from app.db.models import (
+    ApprovalEvent,
+    ClaimSource,
+    Report,
+    ReportClaim,
+    ResearchTask,
+    Source,
+    WorkflowStep,
+)
 from app.domain.enums import ApprovalAction, ReportStatus, TaskStatus
-from app.domain.errors import ConflictError, NotFoundError, ValidationError
+from app.domain.errors import ApprovalRequiredError, ConflictError, NotFoundError, ValidationError
 
 log = get_logger(__name__)
 
@@ -213,6 +221,143 @@ class TaskService:
             .limit(1)
         )
         return int(version or 1)
+
+    async def request_revision(
+        self, *, task_id: uuid.UUID, session_id: str, feedback: str
+    ) -> tuple[ResearchTask, int]:
+        """Send a report back for revision and resume the graph.
+
+        Revisions are capped: each one re-plans and re-retrieves, so an
+        unbounded loop would be an unbounded spend. The cap is reported as a
+        conflict rather than silently ignored.
+        """
+        task = await self.get(task_id=task_id, session_id=session_id)
+        if task.status is not TaskStatus.AWAITING_APPROVAL:
+            raise ConflictError(
+                f"This task is {task.status.value}, so a revision cannot be requested. "
+                "Only a task awaiting approval can be revised.",
+                status=task.status.value,
+            )
+
+        rounds = await self._revision_count(task_id)
+        limit = self._settings.max_revision_rounds
+        if rounds >= limit:
+            raise ConflictError(
+                f"This task has already been revised {rounds} time(s), which is the "
+                f"configured limit of {limit}. Approve the current version or start a "
+                "new task.",
+                revisions_used=rounds,
+                limit=limit,
+            )
+
+        version = await self._latest_report_version(task_id)
+        self._session.add(
+            ApprovalEvent(
+                task_id=task_id,
+                report_version=version,
+                session_id=session_id,
+                action=ApprovalAction.REQUEST_REVISION,
+                feedback=feedback,
+            )
+        )
+        task.status = TaskStatus.RUNNING
+        await self._session.flush()
+
+        await self._queue.enqueue_resume(
+            str(task_id),
+            {"action": ApprovalAction.REQUEST_REVISION.value, "feedback": feedback},
+        )
+        log.info(
+            "revision_requested",
+            task_id=str(task_id),
+            report_version=version,
+            round=rounds + 1,
+        )
+        return task, version
+
+    async def sources(self, *, task_id: uuid.UUID, session_id: str) -> list[Source]:
+        """Retrieved sources in the order used to label them for the model."""
+        await self.get(task_id=task_id, session_id=session_id)
+        rows = await self._session.scalars(
+            select(Source)
+            .where(Source.task_id == task_id)
+            .order_by(Source.subtask_index, Source.rank, Source.id)
+        )
+        return list(rows.all())
+
+    async def report(
+        self, *, task_id: uuid.UUID, session_id: str, version: int | None = None
+    ) -> Report:
+        """The requested report version, or the latest if none is given."""
+        await self.get(task_id=task_id, session_id=session_id)
+        query = select(Report).where(Report.task_id == task_id)
+        query = (
+            query.where(Report.version == version)
+            if version is not None
+            else query.order_by(Report.version.desc()).limit(1)
+        )
+        report = await self._session.scalar(query)
+        if report is None:
+            raise NotFoundError(
+                "No report exists for this task yet.",
+                task_id=str(task_id),
+                version=version,
+            )
+        return report
+
+    async def claims(
+        self, *, task_id: uuid.UUID, session_id: str, version: int | None = None
+    ) -> list[tuple[ReportClaim, list[uuid.UUID]]]:
+        """Claims for a report version, each with the sources supporting it."""
+        report = await self.report(task_id=task_id, session_id=session_id, version=version)
+        claims = list(
+            (
+                await self._session.scalars(
+                    select(ReportClaim)
+                    .where(ReportClaim.report_id == report.id)
+                    .order_by(ReportClaim.ordinal)
+                )
+            ).all()
+        )
+        links = (
+            await self._session.execute(
+                select(ClaimSource.claim_id, ClaimSource.source_id).where(
+                    ClaimSource.claim_id.in_([c.id for c in claims] or [uuid.uuid4()])
+                )
+            )
+        ).all()
+
+        by_claim: dict[uuid.UUID, list[uuid.UUID]] = {}
+        for claim_id, source_id in links:
+            by_claim.setdefault(claim_id, []).append(source_id)
+        return [(claim, by_claim.get(claim.id, [])) for claim in claims]
+
+    async def export_markdown(self, *, task_id: uuid.UUID, session_id: str) -> tuple[str, int]:
+        """Return the approved report's Markdown, or refuse.
+
+        The approval gate is the product: an unapproved report is not
+        exportable, and this is the single place that rule is enforced.
+        """
+        task = await self.get(task_id=task_id, session_id=session_id)
+        if task.status is not TaskStatus.APPROVED:
+            raise ApprovalRequiredError(
+                f"This task is {task.status.value}. A report can only be exported after "
+                "a human has approved it.",
+                status=task.status.value,
+            )
+        report = await self.report(task_id=task_id, session_id=session_id)
+        return report.content_markdown, report.version
+
+    async def _revision_count(self, task_id: uuid.UUID) -> int:
+        count = await self._session.scalar(
+            select(func.count())
+            .select_from(ApprovalEvent)
+            .where(
+                ApprovalEvent.task_id == task_id,
+                ApprovalEvent.action == ApprovalAction.REQUEST_REVISION,
+            )
+        )
+        return int(count or 0)
 
     async def purge_expired(self, *, retention_days: int) -> int:
         """Hard-delete tasks past the retention window.

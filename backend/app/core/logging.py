@@ -10,10 +10,11 @@ rules are enforced here rather than left to discipline at call sites:
 
 from __future__ import annotations
 
+import io
 import logging
 import re
 import sys
-from typing import Any
+from typing import Any, TextIO, cast
 
 import structlog
 from structlog.types import EventDict, Processor
@@ -88,6 +89,24 @@ def _add_correlation(_: Any, __: str, event_dict: EventDict) -> EventDict:
     return event_dict
 
 
+class _LazyStdout(io.TextIOBase):
+    """A stdout proxy resolved at write time, not at configuration time.
+
+    ``PrintLoggerFactory(file=sys.stdout)`` and ``StreamHandler(sys.stdout)``
+    both capture the stream object when logging is configured. If that stream
+    is later replaced or closed -- a process manager rotating output, or a
+    test harness capturing it -- every subsequent log call raises
+    ``ValueError: I/O operation on closed file`` *inside application code*,
+    which can mask the error actually being logged.
+    """
+
+    def write(self, data: str) -> int:
+        return sys.stdout.write(data)
+
+    def flush(self) -> None:
+        sys.stdout.flush()
+
+
 def configure_logging(*, level: str = "info", fmt: str = "json") -> None:
     """Configure structlog and route stdlib logging through it.
 
@@ -117,13 +136,15 @@ def configure_logging(*, level: str = "info", fmt: str = "json") -> None:
         wrapper_class=structlog.make_filtering_bound_logger(
             logging.getLevelNamesMapping()[level.upper()]
         ),
-        logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
+        # cast: the proxy implements the only two methods structlog's
+        # PrintLogger uses, but is not a full TextIO.
+        logger_factory=structlog.PrintLoggerFactory(file=cast(TextIO, _LazyStdout())),
         cache_logger_on_first_use=True,
     )
 
     # Hand stdlib loggers (uvicorn, sqlalchemy, arq) to structlog so output is
     # one consistent stream rather than two interleaved formats.
-    handler = logging.StreamHandler(sys.stdout)
+    handler = logging.StreamHandler(_LazyStdout())
     handler.setFormatter(
         structlog.stdlib.ProcessorFormatter(
             foreign_pre_chain=shared,

@@ -29,8 +29,22 @@ from app.api.deps import (
 )
 from app.core.config import get_settings
 from app.core.security import SESSION_COOKIE_NAME, new_session_id, sign_session_id
-from app.db.models import ResearchTask, WorkflowStep
-from app.domain.enums import LLMProvider, StepStatus, TaskStatus
+from app.db.models import (
+    ApprovalEvent,
+    ClaimSource,
+    Report,
+    ReportClaim,
+    ResearchTask,
+    Source,
+    WorkflowStep,
+)
+from app.domain.enums import (
+    ApprovalAction,
+    LLMProvider,
+    StepStatus,
+    SupportStatus,
+    TaskStatus,
+)
 from app.domain.nodes import LLM_NODES, NodeName
 from app.main import create_app
 from tests.conftest import make_settings
@@ -362,3 +376,231 @@ class TestEnvelopeAndCorrelation:
     ) -> None:
         client, _ = api
         assert (await client.get("/health")).headers["X-Correlation-ID"]
+
+
+class TestExportGate:
+    """Approval gates export. This is the product's central promise."""
+
+    async def _task_with_report(
+        self, client: AsyncClient, db_session: AsyncSession, status: TaskStatus
+    ) -> str:
+        task_id = (await client.post("/api/tasks", json={"question": QUESTION})).json()["id"]
+        task = await db_session.get(ResearchTask, uuid.UUID(task_id))
+        assert task is not None
+        task.status = status
+        db_session.add(
+            Report(
+                task_id=uuid.UUID(task_id),
+                version=1,
+                content_markdown="# Report\n\nBody.",
+            )
+        )
+        await db_session.flush()
+        return task_id
+
+    @pytest.mark.parametrize(
+        "status",
+        [TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.AWAITING_APPROVAL, TaskStatus.FAILED],
+    )
+    async def test_export_is_refused_until_approved(
+        self,
+        session_client: tuple[AsyncClient, FakeQueue, str],
+        db_session: AsyncSession,
+        status: TaskStatus,
+    ) -> None:
+        client, _, _ = session_client
+        task_id = await self._task_with_report(client, db_session, status)
+
+        response = await client.get(f"/api/tasks/{task_id}/export")
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "approval_required"
+
+    async def test_an_approved_report_exports_as_markdown(
+        self, session_client: tuple[AsyncClient, FakeQueue, str], db_session: AsyncSession
+    ) -> None:
+        client, _, _ = session_client
+        task_id = await self._task_with_report(client, db_session, TaskStatus.APPROVED)
+
+        response = await client.get(f"/api/tasks/{task_id}/export")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/markdown")
+        assert "attachment" in response.headers["content-disposition"]
+        assert response.text.startswith("# Report")
+
+    async def test_another_session_cannot_export(
+        self, session_client: tuple[AsyncClient, FakeQueue, str], db_session: AsyncSession
+    ) -> None:
+        client, _, _ = session_client
+        task_id = await self._task_with_report(client, db_session, TaskStatus.APPROVED)
+        client.cookies.set(SESSION_COOKIE_NAME, sign_session_id(new_session_id(), SESSION_SECRET))
+        assert (await client.get(f"/api/tasks/{task_id}/export")).status_code == 404
+
+
+class TestRevisionEndpoint:
+    async def test_a_revision_is_recorded_and_queued(
+        self, session_client: tuple[AsyncClient, FakeQueue, str], db_session: AsyncSession
+    ) -> None:
+        client, queue, _ = session_client
+        task_id = (await client.post("/api/tasks", json={"question": QUESTION})).json()["id"]
+        task = await db_session.get(ResearchTask, uuid.UUID(task_id))
+        assert task is not None
+        task.status = TaskStatus.AWAITING_APPROVAL
+        await db_session.flush()
+
+        response = await client.post(
+            f"/api/tasks/{task_id}/request-revision",
+            json={"feedback": "Please expand the licensing section."},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["action"] == "request_revision"
+        assert response.json()["status"] == TaskStatus.RUNNING.value
+        assert queue.resumes and queue.resumes[-1][1]["action"] == "request_revision"
+
+    async def test_feedback_is_required(
+        self, session_client: tuple[AsyncClient, FakeQueue, str], db_session: AsyncSession
+    ) -> None:
+        """A revision with no explanation gives the workflow nothing to act on."""
+        client, _, _ = session_client
+        task_id = (await client.post("/api/tasks", json={"question": QUESTION})).json()["id"]
+        task = await db_session.get(ResearchTask, uuid.UUID(task_id))
+        assert task is not None
+        task.status = TaskStatus.AWAITING_APPROVAL
+        await db_session.flush()
+
+        response = await client.post(
+            f"/api/tasks/{task_id}/request-revision", json={"feedback": ""}
+        )
+        assert response.status_code == 422
+
+    async def test_a_revision_outside_the_gate_is_a_conflict(
+        self, session_client: tuple[AsyncClient, FakeQueue, str]
+    ) -> None:
+        client, queue, _ = session_client
+        task_id = (await client.post("/api/tasks", json={"question": QUESTION})).json()["id"]
+
+        response = await client.post(
+            f"/api/tasks/{task_id}/request-revision", json={"feedback": "Change it."}
+        )
+        assert response.status_code == 409
+        assert queue.resumes == []
+
+    async def test_the_revision_cap_is_enforced(
+        self, session_client: tuple[AsyncClient, FakeQueue, str], db_session: AsyncSession
+    ) -> None:
+        """Each revision re-plans and re-retrieves, so the loop is bounded."""
+        client, _, _ = session_client
+        task_id = (await client.post("/api/tasks", json={"question": QUESTION})).json()["id"]
+        task = await db_session.get(ResearchTask, uuid.UUID(task_id))
+        assert task is not None
+        task.status = TaskStatus.AWAITING_APPROVAL
+        for _ in range(3):  # the configured cap
+            db_session.add(
+                ApprovalEvent(
+                    task_id=uuid.UUID(task_id),
+                    report_version=1,
+                    session_id=task.session_id,
+                    action=ApprovalAction.REQUEST_REVISION,
+                    feedback="again",
+                )
+            )
+        await db_session.flush()
+
+        response = await client.post(
+            f"/api/tasks/{task_id}/request-revision", json={"feedback": "Once more."}
+        )
+        assert response.status_code == 409
+        assert "limit" in response.json()["error"]["message"].lower()
+
+
+class TestSourcesAndClaims:
+    async def test_sources_are_returned_with_their_model_labels(
+        self, session_client: tuple[AsyncClient, FakeQueue, str], db_session: AsyncSession
+    ) -> None:
+        client, _, _ = session_client
+        task_id = (await client.post("/api/tasks", json={"question": QUESTION})).json()["id"]
+        for index in range(2):
+            db_session.add(
+                Source(
+                    task_id=uuid.UUID(task_id),
+                    subtask_index=index,
+                    url=f"https://fixtures.agentflow.test/doc-{index}",
+                    url_sha256=f"{index}" * 64,
+                    title=f"Doc {index}",
+                    excerpt="text",
+                    provider="fixture",
+                    rank=0,
+                    is_fixture=True,
+                )
+            )
+        await db_session.flush()
+
+        body = (await client.get(f"/api/tasks/{task_id}/sources")).json()
+        assert [s["label"] for s in body] == ["S1", "S2"]
+        assert all(s["is_fixture"] for s in body)
+
+    async def test_claims_report_support_and_evidence(
+        self, session_client: tuple[AsyncClient, FakeQueue, str], db_session: AsyncSession
+    ) -> None:
+        client, _, _ = session_client
+        task_id = (await client.post("/api/tasks", json={"question": QUESTION})).json()["id"]
+        source = Source(
+            task_id=uuid.UUID(task_id),
+            subtask_index=0,
+            url="https://fixtures.agentflow.test/evidence",
+            url_sha256="a" * 64,
+            title="Evidence",
+            excerpt="text",
+            provider="fixture",
+            rank=0,
+            is_fixture=True,
+        )
+        report = Report(task_id=uuid.UUID(task_id), version=1, content_markdown="# r")
+        db_session.add_all([source, report])
+        await db_session.flush()
+
+        supported = ReportClaim(
+            report_id=report.id,
+            ordinal=0,
+            claim_text="A claim a source states.",
+            support_status=SupportStatus.SUPPORTED,
+        )
+        unsupported = ReportClaim(
+            report_id=report.id,
+            ordinal=1,
+            claim_text="A claim nothing states.",
+            support_status=SupportStatus.UNSUPPORTED,
+        )
+        db_session.add_all([supported, unsupported])
+        await db_session.flush()
+        db_session.add(ClaimSource(claim_id=supported.id, source_id=source.id))
+        await db_session.flush()
+
+        body = (await client.get(f"/api/tasks/{task_id}/claims")).json()
+        assert [c["support_status"] for c in body] == ["supported", "unsupported"]
+        assert body[0]["source_labels"] == ["S1"]
+        assert body[1]["source_labels"] == []
+
+    async def test_a_report_can_be_read_before_approval(
+        self, session_client: tuple[AsyncClient, FakeQueue, str], db_session: AsyncSession
+    ) -> None:
+        """Approval gates export, not inspection: a reviewer must be able to
+        read what they are approving."""
+        client, _, _ = session_client
+        task_id = (await client.post("/api/tasks", json={"question": QUESTION})).json()["id"]
+        task = await db_session.get(ResearchTask, uuid.UUID(task_id))
+        assert task is not None
+        task.status = TaskStatus.AWAITING_APPROVAL
+        db_session.add(Report(task_id=uuid.UUID(task_id), version=1, content_markdown="# Draft"))
+        await db_session.flush()
+
+        response = await client.get(f"/api/tasks/{task_id}/report")
+        assert response.status_code == 200
+        assert response.json()["version"] == 1
+
+    async def test_a_missing_report_is_a_404(
+        self, session_client: tuple[AsyncClient, FakeQueue, str]
+    ) -> None:
+        client, _, _ = session_client
+        task_id = (await client.post("/api/tasks", json={"question": QUESTION})).json()["id"]
+        assert (await client.get(f"/api/tasks/{task_id}/report")).status_code == 404

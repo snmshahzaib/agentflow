@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.adapters.llm.base import LLMClient
+from app.adapters.search.base import SearchProvider
 from app.core.config import Settings
 
 
@@ -22,3 +23,4 @@ class NodeDeps:
     settings: Settings
     session_factory: async_sessionmaker[AsyncSession]
     llm: LLMClient
+    search: SearchProvider

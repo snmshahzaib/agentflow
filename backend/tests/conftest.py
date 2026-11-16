@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator, Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.core.config import Settings, get_settings
+
+if TYPE_CHECKING:
+    from app.graph.deps import NodeDeps
 
 #: Captured at import time, before the environment-isolation fixture runs.
 TEST_DATABASE_URL = (
@@ -113,3 +116,53 @@ async def db_session(migrated_database: str) -> AsyncIterator[AsyncSession]:
                 await transaction.rollback()
     finally:
         await engine.dispose()
+
+
+@pytest.fixture
+async def node_deps(migrated_database: str) -> AsyncIterator[NodeDeps]:
+    """Real database, deterministic stub model, committed fixture corpus.
+
+    This is the configuration the offline demo and CI both run, so tests
+    exercise exactly the path a reader of the repository would.
+    """
+    from app.adapters.llm.stub import StubLLMClient
+    from app.adapters.search.fixture import FixtureSearchProvider
+    from app.graph.deps import NodeDeps
+
+    engine = create_async_engine(migrated_database, poolclass=NullPool)
+    try:
+        yield NodeDeps(
+            settings=make_settings(),
+            session_factory=async_sessionmaker(engine, expire_on_commit=False),
+            llm=StubLLMClient(),
+            search=FixtureSearchProvider(),
+        )
+    finally:
+        await engine.dispose()
+
+
+async def create_task_row(
+    deps: NodeDeps,
+    *,
+    question: str = "Compare three open-source workflow orchestration frameworks.",
+    session_id: str | None = None,
+) -> str:
+    """Insert a queued task and return its id as a string."""
+    import uuid as _uuid
+
+    from app.db.models import ResearchTask
+    from app.domain.enums import LLMProvider, SearchMode
+
+    async with deps.session_factory() as session, session.begin():
+        task = ResearchTask(
+            session_id=session_id or f"sess-{_uuid.uuid4().hex[:8]}",
+            question=question,
+            search_mode=SearchMode.FIXTURE,
+            llm_provider=LLMProvider.STUB,
+            max_tokens_budget=deps.settings.llm_max_tokens_per_task,
+            max_calls_budget=deps.settings.llm_max_calls_per_task,
+        )
+        session.add(task)
+        await session.flush()
+        task.graph_thread_id = str(task.id)
+        return str(task.id)

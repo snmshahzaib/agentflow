@@ -17,6 +17,7 @@ from arq.connections import RedisSettings
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.adapters.llm.registry import build_llm_runtime
+from app.adapters.search.registry import build_search_provider
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.db.session import dispose_engine, get_session_factory, init_engine
@@ -34,6 +35,7 @@ async def startup(ctx: dict[str, Any]) -> None:
     session_factory = get_session_factory()
 
     runtime = await build_llm_runtime(settings)
+    search = build_search_provider(settings)
 
     # Held open for the process lifetime; __aenter__/__aexit__ are driven
     # manually because arq's lifecycle is not a context manager.
@@ -46,8 +48,12 @@ async def startup(ctx: dict[str, Any]) -> None:
     ctx["llm_runtime"] = runtime
     ctx["checkpointer"] = checkpointer
     ctx["_saver_cm"] = saver_cm
+    ctx["search"] = search
     ctx["node_deps"] = NodeDeps(
-        settings=settings, session_factory=session_factory, llm=runtime.client
+        settings=settings,
+        session_factory=session_factory,
+        llm=runtime.client,
+        search=search,
     )
 
     log.info(
@@ -63,6 +69,9 @@ async def shutdown(ctx: dict[str, Any]) -> None:
     runtime = ctx.get("llm_runtime")
     if runtime is not None:
         await runtime.client.aclose()
+    search = ctx.get("search")
+    if search is not None:
+        await search.aclose()
     saver_cm = ctx.get("_saver_cm")
     if saver_cm is not None:
         await saver_cm.__aexit__(None, None, None)

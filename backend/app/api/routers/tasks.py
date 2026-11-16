@@ -10,14 +10,20 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Header, Query, Response, status
+from fastapi.responses import PlainTextResponse
 
 from app.api.deps import SessionDep, TaskServiceDep
 from app.core.logging import get_logger
 from app.domain.enums import ApprovalAction
+from app.graph.binding import label_for
 from app.schemas.common import ErrorResponse, Page
 from app.schemas.task import (
     ApprovalRequest,
     ApprovalResult,
+    ClaimView,
+    ReportView,
+    RevisionRequest,
+    SourceView,
     StepView,
     TaskCreate,
     TaskDetail,
@@ -127,4 +133,139 @@ async def approve_task(
         action=ApprovalAction.APPROVE,
         status=task.status,
         report_version=version,
+    )
+
+
+@router.post(
+    "/{task_id}/request-revision",
+    response_model=ApprovalResult,
+    summary="Send the report back for revision",
+    responses=_ERRORS,
+)
+async def request_revision(
+    task_id: UUID,
+    payload: RevisionRequest,
+    service: TaskServiceDep,
+    session_id: SessionDep,
+) -> ApprovalResult:
+    """Record the request and resume the graph at the planning step.
+
+    Re-planning rather than re-wording means the reviewer's note can change
+    which sources are retrieved. Revisions are capped; exceeding the cap is a
+    409 rather than a silent no-op.
+    """
+    task, version = await service.request_revision(
+        task_id=task_id, session_id=session_id, feedback=payload.feedback
+    )
+    return ApprovalResult(
+        task_id=task.id,
+        action=ApprovalAction.REQUEST_REVISION,
+        status=task.status,
+        report_version=version,
+    )
+
+
+@router.get(
+    "/{task_id}/sources",
+    response_model=list[SourceView],
+    summary="Sources retrieved for this task",
+    responses=_ERRORS,
+)
+async def get_sources(
+    task_id: UUID, service: TaskServiceDep, session_id: SessionDep
+) -> list[SourceView]:
+    """In label order: the first entry is the source the model saw as `S1`."""
+    sources = await service.sources(task_id=task_id, session_id=session_id)
+    return [
+        SourceView(
+            id=source.id,
+            label=label_for(index),
+            subtask_index=source.subtask_index,
+            url=source.url,
+            title=source.title,
+            excerpt=source.excerpt,
+            provider=source.provider,
+            rank=source.rank,
+            is_fixture=source.is_fixture,
+            retrieved_at=source.retrieved_at,
+        )
+        for index, source in enumerate(sources)
+    ]
+
+
+@router.get(
+    "/{task_id}/report",
+    response_model=ReportView,
+    summary="Report content",
+    responses=_ERRORS,
+)
+async def get_report(
+    task_id: UUID,
+    service: TaskServiceDep,
+    session_id: SessionDep,
+    version: Annotated[int | None, Query(ge=1)] = None,
+) -> ReportView:
+    """The latest version, or a specific one. Readable before approval —
+    approval gates *export*, not inspection."""
+    report = await service.report(task_id=task_id, session_id=session_id, version=version)
+    return ReportView.model_validate(report)
+
+
+@router.get(
+    "/{task_id}/claims",
+    response_model=list[ClaimView],
+    summary="Per-claim support verdicts",
+    responses=_ERRORS,
+)
+async def get_claims(
+    task_id: UUID,
+    service: TaskServiceDep,
+    session_id: SessionDep,
+    version: Annotated[int | None, Query(ge=1)] = None,
+) -> list[ClaimView]:
+    """Whether each claim is backed by a retrieved source.
+
+    This is claim-to-source support, not a fact check: a `supported` verdict
+    means a retrieved source states the claim, not that the claim is true.
+    """
+    sources = await service.sources(task_id=task_id, session_id=session_id)
+    label_by_id = {source.id: label_for(index) for index, source in enumerate(sources)}
+
+    claims = await service.claims(task_id=task_id, session_id=session_id, version=version)
+    return [
+        ClaimView(
+            id=claim.id,
+            ordinal=claim.ordinal,
+            claim_text=claim.claim_text,
+            support_status=claim.support_status,
+            rationale=claim.rationale,
+            source_ids=source_ids,
+            source_labels=[label_by_id[sid] for sid in source_ids if sid in label_by_id],
+        )
+        for claim, source_ids in claims
+    ]
+
+
+@router.get(
+    "/{task_id}/export",
+    response_class=PlainTextResponse,
+    summary="Export the approved report as Markdown",
+    responses={
+        **_ERRORS,
+        200: {"content": {"text/markdown": {}}, "description": "The approved report."},
+    },
+)
+async def export_report(
+    task_id: UUID, service: TaskServiceDep, session_id: SessionDep
+) -> PlainTextResponse:
+    """Refused with 409 until a human has approved the report."""
+    markdown, version = await service.export_markdown(task_id=task_id, session_id=session_id)
+    return PlainTextResponse(
+        content=markdown,
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="agentflow-report-{task_id}-v{version}.md"'
+            )
+        },
     )

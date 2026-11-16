@@ -1,0 +1,109 @@
+{
+  "_comment": "Canned per-node responses for the deterministic stub adapter. This is FIXTURE CONTENT, not model output: it is written by hand so the offline demo exercises the whole workflow without a provider. Source references (S1, S2, ...) are labels resolved against whatever sources the research node actually retrieved, so they stay valid for any corpus. Anything produced from these responses is labelled as a fixture result everywhere it surfaces.",
+  "plan": {
+    "subtasks": [
+      {
+        "question": "What is the operational burden of each orchestrator for a small team?",
+        "search_query": "airflow prefect dagster operational burden small team self-host components",
+        "rationale": "A small team's limiting factor is usually operations, not features."
+      },
+      {
+        "question": "How does each framework's developer and testing experience compare?",
+        "search_query": "dagster prefect airflow testing developer experience local development assets",
+        "rationale": "Day-to-day iteration speed decides whether a tool is adopted."
+      },
+      {
+        "question": "What are the licensing and open-core boundaries?",
+        "search_query": "airflow prefect dagster licensing open core apache pricing hosted",
+        "rationale": "Open-core boundaries determine what a self-hosting team actually gets."
+      }
+    ],
+    "rationale": "Three angles that matter most to a small engineering team choosing an orchestrator: what it costs to run, what it costs to work in, and what the licence actually covers."
+  },
+  "analyse": {
+    "findings": [
+      {
+        "statement": "Apache Airflow has the heaviest self-hosted operational footprint of the three, requiring a scheduler, a metadata database and worker processes.",
+        "source_refs": ["S1"],
+        "subtask_index": 0
+      },
+      {
+        "statement": "Prefect is the lightest option for purely local use, needing only the library to run a flow, though it converges with the others once a server is self-hosted.",
+        "source_refs": ["S2"],
+        "subtask_index": 0
+      },
+      {
+        "statement": "Dagster's asset model makes pipelines testable as ordinary functions, but engineers used to task graphs typically need a week or two to adjust.",
+        "source_refs": ["S3"],
+        "subtask_index": 1
+      },
+      {
+        "statement": "All three projects publish an Apache-2.0 core and sell a hosted product, with features such as role-based access control commonly on the paid side.",
+        "source_refs": ["S4"],
+        "subtask_index": 2
+      },
+      {
+        "statement": "Airflow processes at least 40,000 tasks per second in a default single-scheduler deployment.",
+        "source_refs": ["S5"],
+        "subtask_index": 0
+      }
+    ],
+    "summary": "The three frameworks differ most in operational weight and in how much of a conceptual shift they demand, rather than in raw capability."
+  },
+  "citation_check": {
+    "verdicts": [
+      {
+        "claim_text": "Apache Airflow has the heaviest self-hosted operational footprint of the three, requiring a scheduler, a metadata database and worker processes.",
+        "support_status": "supported",
+        "source_refs": ["S1"],
+        "rationale": "A retrieved source states the component list and describes the footprint as the heaviest of the three."
+      },
+      {
+        "claim_text": "Prefect is the lightest option for purely local use, needing only the library to run a flow, though it converges with the others once a server is self-hosted.",
+        "support_status": "supported",
+        "source_refs": ["S2"],
+        "rationale": "A retrieved source states both the local-only claim and the convergence caveat."
+      },
+      {
+        "claim_text": "Dagster's asset model makes pipelines testable as ordinary functions, but engineers used to task graphs typically need a week or two to adjust.",
+        "support_status": "partial",
+        "source_refs": ["S3"],
+        "rationale": "The testability claim is stated by a retrieved source; the adjustment period is described qualitatively rather than measured, so the specific duration is weaker than the claim implies."
+      },
+      {
+        "claim_text": "All three projects publish an Apache-2.0 core and sell a hosted product, with features such as role-based access control commonly on the paid side.",
+        "support_status": "supported",
+        "source_refs": ["S4"],
+        "rationale": "A retrieved source states the licence and the open-core boundary."
+      },
+      {
+        "claim_text": "Airflow processes at least 40,000 tasks per second in a default single-scheduler deployment.",
+        "support_status": "unsupported",
+        "source_refs": [],
+        "rationale": "No retrieved source states any throughput figure. The one source discussing benchmarks explicitly declines to reproduce numbers because no methodology was published."
+      }
+    ]
+  },
+  "draft": {
+    "title": "Comparing three open-source workflow orchestrators for a small team",
+    "summary": "For a team of a few engineers, the decision turns on operational weight and on how much conceptual change the team is willing to absorb. Airflow is the most established and the heaviest to run; Prefect is the quickest to start locally; Dagster asks for a shift to an asset-oriented model and repays it with testability. One widely repeated throughput claim could not be supported by any retrieved source and is excluded from the recommendation.",
+    "sections": [
+      {
+        "heading": "Operational weight",
+        "body": "Airflow expects a scheduler, a metadata database and worker processes to be kept healthy, which is a real commitment for a team of a few people. Prefect is the lightest to begin with because a flow runs with nothing but the library installed, though that advantage narrows once a server is self-hosted for scheduling and observability. Dagster sits between the two."
+      },
+      {
+        "heading": "Developer experience",
+        "body": "Dagster's software-defined assets are ordinary callables, so they test like any other function, and the local development loop is built around that. The cost is the conceptual shift: engineers who think in task graphs generally need a short adjustment period, and migrating an existing task-oriented pipeline is closer to a rewrite than a port."
+      },
+      {
+        "heading": "Licensing",
+        "body": "All three publish an Apache-2.0 core and sell a hosted product alongside it. The boundary between the two differs by project, and capabilities a team may assume are present — role-based access control, long-term run history — are frequently on the paid side. That boundary is worth checking against your own requirements before committing."
+      },
+      {
+        "heading": "What this comparison does not settle",
+        "body": "Performance is not compared here. The only retrieved source that discusses throughput declines to reproduce figures because the surveyed posts publish no methodology, so any performance claim in this area remains unsupported."
+      }
+    ]
+  }
+}

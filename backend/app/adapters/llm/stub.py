@@ -38,7 +38,10 @@ def load_stub_responses(path: Path | None = None) -> dict[NodeName, Any]:
         return {}
     with target.open(encoding="utf-8") as handle:
         raw: Mapping[str, Any] = json.load(handle)
-    return {NodeName(node): body for node, body in raw.items()}
+    # Keys beginning with "_" are metadata -- the fixture files carry a
+    # provenance comment stating that their content is hand-written and not
+    # model output.
+    return {NodeName(node): body for node, body in raw.items() if not node.startswith("_")}
 
 
 class StubLLMClient:
