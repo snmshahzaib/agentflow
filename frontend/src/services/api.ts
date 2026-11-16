@@ -6,7 +6,17 @@
  * can quote an id that appears in server logs.
  */
 
-import type { ApiErrorBody, Meta, Page, StepView, TaskDetail, TaskSummary } from '@/types/api'
+import type {
+  ApiErrorBody,
+  ClaimView,
+  Meta,
+  Page,
+  ReportView,
+  SourceView,
+  StepView,
+  TaskDetail,
+  TaskSummary,
+} from '@/types/api'
 
 const BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? ''
 
@@ -84,6 +94,25 @@ export const api = {
       headers: { 'Idempotency-Key': idempotencyKey },
       body: JSON.stringify({ question }),
     }),
+
+  getSources: (id: string) => request<SourceView[]>(`/api/tasks/${id}/sources`),
+
+  getClaims: (id: string) => request<ClaimView[]>(`/api/tasks/${id}/claims`),
+
+  getReport: (id: string) => request<ReportView>(`/api/tasks/${id}/report`),
+
+  requestRevision: (id: string, feedback: string) =>
+    request<{ task_id: string; status: string; report_version: number }>(
+      `/api/tasks/${id}/request-revision`,
+      { method: 'POST', body: JSON.stringify({ feedback }) },
+    ),
+
+  /**
+   * The export URL. Used as a plain link so the browser performs the
+   * download with the session cookie attached; the API refuses it with 409
+   * until a human has approved the report.
+   */
+  exportUrl: (id: string) => `${BASE}/api/tasks/${id}/export`,
 
   approveTask: (id: string, feedback?: string) =>
     request<{ task_id: string; status: string; report_version: number }>(

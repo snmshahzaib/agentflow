@@ -52,6 +52,51 @@ export interface StepView {
   duration_ms: number | null
 }
 
+export type SupportStatus = 'supported' | 'partial' | 'unsupported'
+
+export interface SourceView {
+  id: string
+  /** The label this source carries in the report, e.g. "S1". */
+  label: string
+  subtask_index: number
+  url: string
+  title: string | null
+  excerpt: string | null
+  provider: string
+  rank: number
+  /** True when this came from the committed fixture corpus, not live retrieval. */
+  is_fixture: boolean
+  retrieved_at: string
+}
+
+export interface ClaimView {
+  id: string
+  ordinal: number
+  claim_text: string
+  /**
+   * Whether a retrieved source *states* this claim. Not a judgement about
+   * whether the claim is true — the UI must never present it as one.
+   */
+  support_status: SupportStatus
+  rationale: string | null
+  source_ids: string[]
+  source_labels: string[]
+}
+
+export interface ReportView {
+  id: string
+  version: number
+  status: 'draft' | 'approved' | 'superseded'
+  content_markdown: string
+  created_at: string
+}
+
+export const SUPPORT_LABELS: Record<SupportStatus, string> = {
+  supported: 'Supported',
+  partial: 'Partial',
+  unsupported: 'Unsupported',
+}
+
 export interface NodeModelInfo {
   node: string
   model: string

@@ -8,6 +8,7 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import type { QueryClient } from '@tanstack/react-query'
 
 import { api } from '@/services/api'
 import { ACTIVE_STATUSES, type TaskStatus } from '@/types/api'
@@ -63,6 +64,47 @@ export function useSteps(id: string | undefined, status: TaskStatus | undefined)
   })
 }
 
+export function useSources(id: string | undefined, status: TaskStatus | undefined) {
+  return useQuery({
+    queryKey: ['sources', id ?? ''],
+    queryFn: () => api.getSources(id!),
+    enabled: Boolean(id),
+    refetchInterval: () => pollWhileActive(status),
+  })
+}
+
+export function useClaims(id: string | undefined, status: TaskStatus | undefined) {
+  return useQuery({
+    queryKey: ['claims', id ?? ''],
+    queryFn: () => api.getClaims(id!),
+    enabled: Boolean(id),
+    // A missing report is expected before the draft node runs, so a 404 here
+    // is a normal state rather than an error worth retrying.
+    retry: false,
+    refetchInterval: () => pollWhileActive(status),
+  })
+}
+
+export function useReport(id: string | undefined, status: TaskStatus | undefined) {
+  return useQuery({
+    queryKey: ['report', id ?? ''],
+    queryFn: () => api.getReport(id!),
+    enabled: Boolean(id),
+    retry: false,
+    refetchInterval: () => pollWhileActive(status),
+  })
+}
+
+export function useRequestRevision(id: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (feedback: string) => api.requestRevision(id, feedback),
+    onSuccess: async () => {
+      await invalidateTask(queryClient, id)
+    },
+  })
+}
+
 export function useCreateTask() {
   const queryClient = useQueryClient()
   return useMutation({
@@ -79,11 +121,21 @@ export function useApproveTask(id: string) {
   return useMutation({
     mutationFn: (feedback?: string) => api.approveTask(id, feedback),
     onSuccess: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.task(id) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.steps(id) }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
-      ])
+      await invalidateTask(queryClient, id)
     },
   })
+}
+
+/** Everything that changes when a task's state moves. */
+async function invalidateTask(queryClient: QueryClient, id: string): Promise<void> {
+  await Promise.all(
+    [
+      queryKeys.task(id),
+      queryKeys.steps(id),
+      queryKeys.tasks,
+      ['sources', id],
+      ['claims', id],
+      ['report', id],
+    ].map((queryKey) => queryClient.invalidateQueries({ queryKey })),
+  )
 }
