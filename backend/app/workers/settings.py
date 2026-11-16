@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+from arq import cron
 from arq.connections import RedisSettings
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
@@ -22,7 +23,7 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.db.session import dispose_engine, get_session_factory, init_engine
 from app.graph.deps import NodeDeps
-from app.workers.jobs import resume_task, run_task
+from app.workers.jobs import recover_orphaned_tasks, resume_task, run_task
 
 log = get_logger(__name__)
 
@@ -82,7 +83,12 @@ async def shutdown(ctx: dict[str, Any]) -> None:
 class WorkerSettings:
     """arq configuration."""
 
-    functions: ClassVar[list[Any]] = [run_task, resume_task]
+    functions: ClassVar[list[Any]] = [run_task, resume_task, recover_orphaned_tasks]
+    # Sweeps for tasks whose worker died abruptly. Cheap: it only touches
+    # tasks that have looked stalled for longer than the grace period.
+    cron_jobs: ClassVar[list[Any]] = [
+        cron(recover_orphaned_tasks, minute=set(range(0, 60, 2)), run_at_startup=True)
+    ]
     on_startup = startup
     on_shutdown = shutdown
     # Concurrency is capped so a demo deployment cannot be driven into a

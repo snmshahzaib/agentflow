@@ -7,12 +7,13 @@ longer owns.
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 import pytest
 from redis.asyncio import Redis
 
-from app.workers.locks import single_flight
+from app.workers.locks import is_locked, single_flight
 
 pytestmark = pytest.mark.integration
 
@@ -79,3 +80,33 @@ class TestSingleFlight:
         await redis.delete(key)
         async with single_flight(redis, key, ttl=42):
             assert 0 < await redis.ttl(key) <= 42
+
+
+class TestHeartbeat:
+    async def test_the_ttl_is_extended_while_the_lock_is_held(self, redis: Redis) -> None:
+        """A long-running task must not have its lock expire underneath it."""
+        key = "test:lock:heartbeat"
+        await redis.delete(key)
+        async with single_flight(redis, key, ttl=3, heartbeat_interval=0.3):
+            await asyncio.sleep(1.2)
+            # Without a heartbeat the TTL would have decayed below 2 by now.
+            assert await redis.ttl(key) >= 2
+        assert await redis.get(key) is None
+
+    async def test_the_heartbeat_stops_when_the_lock_is_taken(self, redis: Redis) -> None:
+        """If another worker has taken over, this one must stop refreshing."""
+        key = "test:lock:stolen-heartbeat"
+        await redis.delete(key)
+        async with single_flight(redis, key, ttl=5, heartbeat_interval=0.2):
+            await redis.set(key, "another-worker", ex=5)
+            await asyncio.sleep(0.6)
+            assert await redis.get(key) == "another-worker"
+        await redis.delete(key)
+
+    async def test_is_locked_reports_live_ownership(self, redis: Redis) -> None:
+        key = "test:lock:islocked"
+        await redis.delete(key)
+        assert await is_locked(redis, key) is False
+        async with single_flight(redis, key, ttl=30):
+            assert await is_locked(redis, key) is True
+        assert await is_locked(redis, key) is False

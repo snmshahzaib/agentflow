@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -22,7 +23,13 @@ from app.db.models import Report, ReportClaim, ResearchTask, WorkflowStep
 from app.domain.enums import ApprovalAction, StepStatus, TaskStatus
 from app.domain.nodes import NodeName
 from app.graph.deps import NodeDeps
-from app.workers.jobs import LOCK_TTL_SECONDS, resume_task, run_task
+from app.workers.jobs import (
+    LOCK_TTL_SECONDS,
+    ORPHAN_GRACE_SECONDS,
+    recover_orphaned_tasks,
+    resume_task,
+    run_task,
+)
 from app.workers.locks import single_flight
 from tests.conftest import create_task_row
 
@@ -43,6 +50,24 @@ async def redis() -> AsyncIterator[Redis]:
     await client.aclose()
 
 
+class RecordingRedis:
+    """Wraps the real Redis client and records enqueue_job calls.
+
+    The sweep's job is to put work back on the queue; asserting on that is
+    more precise than waiting for arq to pick it up.
+    """
+
+    def __init__(self, inner: Redis) -> None:
+        self._inner = inner
+        self.enqueued: list[tuple[str, str]] = []
+
+    async def enqueue_job(self, name: str, *args: Any, **kwargs: Any) -> None:
+        self.enqueued.append((name, str(args[0])))
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self._inner, item)
+
+
 @pytest.fixture
 async def worker_ctx(
     node_deps: NodeDeps, redis: Redis, migrated_database: str
@@ -56,7 +81,7 @@ async def worker_ctx(
     async with AsyncPostgresSaver.from_conn_string(dsn) as checkpointer:
         await checkpointer.setup()
         yield {
-            "redis": redis,
+            "redis": RecordingRedis(redis),
             "session_factory": node_deps.session_factory,
             "node_deps": node_deps,
             "checkpointer": checkpointer,
@@ -212,6 +237,128 @@ class TestRestartRecovery:
 
         reports = await reports_for(node_deps, task_id)
         assert [r.version for r in reports] == [1, 2]
+
+
+class TestStatusSettlement:
+    """A revision parks at the gate again, so the status must follow.
+
+    Regression test: resume_task originally returned without reconciling the
+    task's status, so a revised task stayed `running` forever even though its
+    report was ready to review. The Docker restart test caught it.
+    """
+
+    async def test_a_revision_returns_the_task_to_awaiting_approval(
+        self, node_deps: NodeDeps, worker_ctx: dict[str, Any]
+    ) -> None:
+        task_id = await create_task_row(node_deps, question=QUESTION)
+        await run_task(worker_ctx, task_id)
+
+        # The API moves the task to RUNNING before enqueuing the resume.
+        async with node_deps.session_factory() as session, session.begin():
+            task = await session.get(ResearchTask, uuid.UUID(task_id))
+            assert task is not None
+            task.status = TaskStatus.RUNNING
+
+        await resume_task(
+            worker_ctx,
+            task_id,
+            {
+                "action": ApprovalAction.REQUEST_REVISION.value,
+                "feedback": "Please expand the licensing section.",
+            },
+        )
+
+        async with node_deps.session_factory() as session:
+            task = await session.get(ResearchTask, uuid.UUID(task_id))
+        assert task is not None
+        assert task.status is TaskStatus.AWAITING_APPROVAL
+        assert [r.version for r in await reports_for(node_deps, task_id)] == [1, 2]
+
+    async def test_approval_is_not_overwritten_when_the_graph_finishes(
+        self, node_deps: NodeDeps, worker_ctx: dict[str, Any]
+    ) -> None:
+        """The API records approval before enqueuing; the worker must not
+        downgrade it afterwards."""
+        task_id = await create_task_row(node_deps, question=QUESTION)
+        await run_task(worker_ctx, task_id)
+
+        async with node_deps.session_factory() as session, session.begin():
+            task = await session.get(ResearchTask, uuid.UUID(task_id))
+            assert task is not None
+            task.status = TaskStatus.APPROVED
+
+        await resume_task(worker_ctx, task_id, {"action": ApprovalAction.APPROVE.value})
+
+        async with node_deps.session_factory() as session:
+            task = await session.get(ResearchTask, uuid.UUID(task_id))
+        assert task is not None
+        assert task.status is TaskStatus.APPROVED
+
+
+class TestOrphanRecovery:
+    """A worker killed with SIGKILL never releases its lock or finishes its
+    task. Without a sweep the task sits in `running` forever: arq's retry is
+    refused by the still-held lock, and nothing else ever looks at it.
+    """
+
+    async def _stall(self, deps: NodeDeps, task_id: str, status: TaskStatus) -> None:
+        """Make a task look abandoned: wrong status, old enough to adopt."""
+        async with deps.session_factory() as session, session.begin():
+            task = await session.get(ResearchTask, uuid.UUID(task_id))
+            assert task is not None
+            task.status = status
+            task.updated_at = datetime.now(UTC) - timedelta(seconds=ORPHAN_GRACE_SECONDS + 60)
+
+    @pytest.mark.parametrize("status", [TaskStatus.RUNNING, TaskStatus.QUEUED])
+    async def test_a_stalled_task_with_no_lock_is_requeued(
+        self, node_deps: NodeDeps, worker_ctx: dict[str, Any], status: TaskStatus
+    ) -> None:
+        task_id = await create_task_row(node_deps, question=QUESTION)
+        await self._stall(node_deps, task_id, status)
+
+        requeued = await recover_orphaned_tasks(worker_ctx)
+
+        assert requeued >= 1
+        assert worker_ctx["redis"].enqueued, "the task should have been put back on the queue"
+        assert task_id in {job[1] for job in worker_ctx["redis"].enqueued}
+
+    async def test_a_task_a_live_worker_holds_is_left_alone(
+        self, node_deps: NodeDeps, worker_ctx: dict[str, Any], redis: Redis
+    ) -> None:
+        """Adopting a task another worker is actively running would create a
+        second writer -- exactly what the lock exists to prevent."""
+        task_id = await create_task_row(node_deps, question=QUESTION)
+        await self._stall(node_deps, task_id, TaskStatus.RUNNING)
+
+        async with single_flight(redis, f"task:{task_id}", ttl=60):
+            await recover_orphaned_tasks(worker_ctx)
+
+        assert task_id not in {job[1] for job in worker_ctx["redis"].enqueued}
+
+    async def test_a_recently_updated_task_is_not_adopted(
+        self, node_deps: NodeDeps, worker_ctx: dict[str, Any]
+    ) -> None:
+        """The grace period stops a freshly-enqueued task being stolen before
+        its worker has claimed it."""
+        task_id = await create_task_row(node_deps, question=QUESTION)
+        # Left at its natural, very recent updated_at.
+        await recover_orphaned_tasks(worker_ctx)
+        assert task_id not in {job[1] for job in worker_ctx["redis"].enqueued}
+
+    @pytest.mark.parametrize(
+        "status", [TaskStatus.AWAITING_APPROVAL, TaskStatus.APPROVED, TaskStatus.FAILED]
+    )
+    async def test_tasks_not_in_flight_are_never_adopted(
+        self, node_deps: NodeDeps, worker_ctx: dict[str, Any], status: TaskStatus
+    ) -> None:
+        """A task waiting for a human is not stalled; re-running it would
+        discard the report under review."""
+        task_id = await create_task_row(node_deps, question=QUESTION)
+        await self._stall(node_deps, task_id, status)
+
+        await recover_orphaned_tasks(worker_ctx)
+
+        assert task_id not in {job[1] for job in worker_ctx["redis"].enqueued}
 
 
 class TestNodeIdempotency:

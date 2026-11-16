@@ -8,23 +8,31 @@ so there is exactly one writer per task. That lock plus
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from langgraph.types import Command
+from sqlalchemy import select
 
 from app.core.correlation import new_correlation_id, set_correlation_id, set_task_id
 from app.core.logging import get_logger
 from app.db.models import ResearchTask
 from app.domain.enums import TaskStatus
 from app.graph.builder import build_graph
-from app.workers.locks import single_flight
+from app.workers.locks import is_locked, single_flight
 
 log = get_logger(__name__)
 
-#: How long a task may hold its lock before it is considered abandoned. Long
-#: enough for a full graph run, short enough that a crashed worker's task
-#: becomes retryable without manual intervention.
-LOCK_TTL_SECONDS = 900
+#: Lock lifetime. Deliberately short and refreshed by a heartbeat while the
+#: worker is alive: a SIGKILLed worker never releases its lock, so a long TTL
+#: would strand its task for that whole duration.
+LOCK_TTL_SECONDS = 180
+#: How often the holder extends the TTL.
+LOCK_HEARTBEAT_SECONDS = 60
+
+#: A task must look stalled for at least this long before the sweep adopts it,
+#: so a task between enqueue and claim is never stolen from a healthy worker.
+ORPHAN_GRACE_SECONDS = 120
 
 
 async def _set_status(ctx: dict[str, Any], task_id: str, **changes: Any) -> None:
@@ -38,6 +46,28 @@ async def _set_status(ctx: dict[str, Any], task_id: str, **changes: Any) -> None
             setattr(task, field, value)
 
 
+async def _settle_status(
+    ctx: dict[str, Any], graph: Any, config: dict[str, Any], task_id: str
+) -> str:
+    """Reconcile the task's status with where the graph actually is.
+
+    Both entry points need this. A graph that is interrupted is waiting for a
+    human, whatever the task row currently says; without this a revised task
+    stays `running` forever even though its report is ready to review.
+    """
+    state = await graph.aget_state(config)
+    if state.next:
+        await _set_status(ctx, task_id, status=TaskStatus.AWAITING_APPROVAL)
+        log.info("task_awaiting_approval", task_id=task_id)
+        return TaskStatus.AWAITING_APPROVAL.value
+
+    # The graph has finished. Approval is recorded by the API before the
+    # resume is enqueued, so the status is already correct and must not be
+    # overwritten here.
+    log.info("task_graph_complete", task_id=task_id)
+    return "complete"
+
+
 async def run_task(ctx: dict[str, Any], task_id: str) -> str:
     """Execute a research task up to the approval gate.
 
@@ -47,7 +77,12 @@ async def run_task(ctx: dict[str, Any], task_id: str) -> str:
     set_correlation_id(new_correlation_id())
     set_task_id(task_id)
 
-    async with single_flight(ctx["redis"], f"task:{task_id}", ttl=LOCK_TTL_SECONDS) as acquired:
+    async with single_flight(
+        ctx["redis"],
+        f"task:{task_id}",
+        ttl=LOCK_TTL_SECONDS,
+        heartbeat_interval=LOCK_HEARTBEAT_SECONDS,
+    ) as acquired:
         if not acquired:
             # Another worker holds this task. Duplicate delivery is expected,
             # not exceptional.
@@ -87,15 +122,7 @@ async def run_task(ctx: dict[str, Any], task_id: str) -> str:
             )
             raise
 
-        # Reaching here means the graph hit the approval interrupt.
-        state = await graph.aget_state(config)
-        if state.next:
-            await _set_status(ctx, task_id, status=TaskStatus.AWAITING_APPROVAL)
-            log.info("task_awaiting_approval", task_id=task_id)
-            return TaskStatus.AWAITING_APPROVAL.value
-
-        await _set_status(ctx, task_id, status=TaskStatus.APPROVED)
-        return TaskStatus.APPROVED.value
+        return await _settle_status(ctx, graph, config, task_id)
 
 
 async def resume_task(ctx: dict[str, Any], task_id: str, decision: dict[str, Any]) -> str:
@@ -103,7 +130,12 @@ async def resume_task(ctx: dict[str, Any], task_id: str, decision: dict[str, Any
     set_correlation_id(new_correlation_id())
     set_task_id(task_id)
 
-    async with single_flight(ctx["redis"], f"task:{task_id}", ttl=LOCK_TTL_SECONDS) as acquired:
+    async with single_flight(
+        ctx["redis"],
+        f"task:{task_id}",
+        ttl=LOCK_TTL_SECONDS,
+        heartbeat_interval=LOCK_HEARTBEAT_SECONDS,
+    ) as acquired:
         if not acquired:
             log.info("task_already_running", task_id=task_id)
             return "locked"
@@ -125,4 +157,56 @@ async def resume_task(ctx: dict[str, Any], task_id: str, decision: dict[str, Any
             raise
 
         log.info("task_resumed", task_id=task_id, action=decision.get("action"))
+        # A revision re-enters the graph and parks at the gate again, so the
+        # status has to be settled here too.
+        await _settle_status(ctx, graph, config, task_id)
         return "resumed"
+
+
+async def recover_orphaned_tasks(ctx: dict[str, Any]) -> int:
+    """Re-queue tasks whose worker died without finishing them.
+
+    A worker killed abruptly leaves no trace except a task row stuck in
+    `queued` or `running` and a lock that expires on its own. This sweep finds
+    those tasks once the lock is gone and puts them back on the queue, so a
+    hard kill costs a retry rather than a permanently stranded task.
+
+    A task whose lock is still present belongs to a live worker and is left
+    alone; the grace period keeps a freshly-enqueued task from being adopted
+    before its worker has had a chance to claim it.
+    """
+    set_correlation_id(new_correlation_id())
+    redis = ctx["redis"]
+    factory = ctx["session_factory"]
+    cutoff = datetime.now(UTC) - timedelta(seconds=ORPHAN_GRACE_SECONDS)
+
+    async with factory() as session:
+        candidates = list(
+            (
+                await session.scalars(
+                    select(ResearchTask).where(
+                        ResearchTask.status.in_([TaskStatus.QUEUED, TaskStatus.RUNNING]),
+                        ResearchTask.updated_at < cutoff,
+                        ResearchTask.deleted_at.is_(None),
+                    )
+                )
+            ).all()
+        )
+
+    requeued = 0
+    for task in candidates:
+        task_id = str(task.id)
+        if await is_locked(redis, f"task:{task_id}"):
+            continue  # a live worker owns it
+        await redis.enqueue_job("run_task", task_id)
+        requeued += 1
+        log.warning(
+            "orphaned_task_requeued",
+            task_id=task_id,
+            status=task.status.value,
+            stalled_since=task.updated_at.isoformat(),
+        )
+
+    if requeued:
+        log.info("orphan_sweep_completed", candidates=len(candidates), requeued=requeued)
+    return requeued
