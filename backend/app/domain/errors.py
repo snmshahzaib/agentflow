@@ -111,6 +111,19 @@ class AdapterError(AgentFlowError):
     #: Whether retrying the same call could plausibly succeed.
     retryable: bool = False
 
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        retry_after_seconds: float | None = None,
+        **details: Any,
+    ) -> None:
+        super().__init__(message, **details)
+        #: How long the provider asked us to wait, when it said so. Honouring
+        #: this matters on rate-limited free tiers, where an exponential
+        #: backoff guess is usually wrong in both directions.
+        self.retry_after_seconds = retry_after_seconds
+
 
 class ProviderTimeoutError(AdapterError):
     code = "provider_timeout"

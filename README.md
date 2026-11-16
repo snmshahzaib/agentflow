@@ -161,6 +161,14 @@ AgentFlow runs with **no API keys at all** in its default configuration: `LLM_PR
 and `SEARCH_PROVIDER=fixture` give a fully deterministic offline demo. Fixture and stub output
 is labelled as such in the UI and is never presented as live AI.
 
+To run real models without spending anything, use the **free development profile** — see
+[`docs/model-configuration.md`](docs/model-configuration.md). `LLM_FREE_MODELS_ONLY=true`
+refuses any model with non-zero published pricing, at startup and before every call, so a
+billable request cannot be made by accident. Free endpoints are slow and rate-limited and
+their analysis quality is materially weaker; they exist to exercise the workflow, not to
+produce output worth relying on. No security control or structured-output requirement is
+relaxed to accommodate them.
+
 Every published host port is configurable in `.env` (`API_PORT`, `FRONTEND_PORT`,
 `POSTGRES_HOST_PORT`, `REDIS_HOST_PORT`), which matters if you already run Postgres or Redis
 locally — a clash shows up as `Bind for 127.0.0.1:5433 failed: port is already allocated`.

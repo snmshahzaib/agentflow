@@ -76,6 +76,10 @@ class Settings(BaseSettings):
 
     llm_fallback_models: str = ""
     llm_require_structured_output: bool = True
+    #: Refuse to call any model that is not free. A hard control, not a
+    #: preference: with it set, a billable call cannot be made even if a
+    #: priced model is configured by mistake.
+    llm_free_models_only: bool = False
     llm_timeout_seconds: Annotated[float, Field(gt=0, le=600)] = 90.0
     llm_max_attempts: Annotated[int, Field(ge=1, le=10)] = 3
     llm_data_collection: DataCollectionPolicy = DataCollectionPolicy.DENY

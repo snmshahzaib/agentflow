@@ -37,6 +37,7 @@ class LLMRuntime:
     catalogue_size: int = 0
     require_structured_output: bool = True
     fallback_models: list[str] = field(default_factory=list)
+    free_models_only: bool = False
 
     @property
     def is_live(self) -> bool:
@@ -109,6 +110,7 @@ async def _build_gateway_runtime(settings: Settings) -> LLMRuntime:
         configured,
         require_structured_output=settings.llm_require_structured_output,
         min_context_tokens=MIN_CONTEXT_TOKENS,
+        free_models_only=settings.llm_free_models_only,
     )
 
     # Fallbacks are validated too, but a broken fallback must not stop the
@@ -130,6 +132,9 @@ async def _build_gateway_runtime(settings: Settings) -> LLMRuntime:
                 context_length=caps.context_length,
             )
             continue
+        if settings.llm_free_models_only and not caps.is_free:
+            log.warning("fallback_model_not_free", model=model_id)
+            continue
         usable_fallbacks.append(model_id)
 
     if not api_key:  # defence in depth; Settings already refuses this
@@ -145,6 +150,7 @@ async def _build_gateway_runtime(settings: Settings) -> LLMRuntime:
         timeout_seconds=settings.llm_timeout_seconds,
         max_attempts=settings.llm_max_attempts,
         data_collection=settings.llm_data_collection,
+        free_models_only=settings.llm_free_models_only,
         app_title=settings.llm_app_title,
         app_url=settings.llm_app_url,
         provider=settings.llm_provider,
@@ -153,6 +159,7 @@ async def _build_gateway_runtime(settings: Settings) -> LLMRuntime:
     log.info(
         "llm_runtime_ready",
         provider=settings.llm_provider.value,
+        free_models_only=settings.llm_free_models_only,
         catalogue_source=source,
         catalogue_size=len(catalogue),
         models={n.value: m for n, m in configured.items()},
@@ -169,4 +176,5 @@ async def _build_gateway_runtime(settings: Settings) -> LLMRuntime:
         catalogue_size=len(catalogue),
         require_structured_output=settings.llm_require_structured_output,
         fallback_models=usable_fallbacks,
+        free_models_only=settings.llm_free_models_only,
     )

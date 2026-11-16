@@ -190,3 +190,39 @@ accidental expensive model stops the suite instead of the bill.
 **Consequence.** The default test suite stays free, offline and
 deterministic; CI never needs a provider key. The cost of live assurance is
 opt-in and visible.
+
+
+---
+
+## ADR-010 — A free-model development profile, with no relaxed controls
+
+**Status:** accepted (2026-11-16)
+
+**Context.** Live verification was wanted before the OpenRouter account had
+purchased credits. Of 469 catalogue models, 17 are genuinely free and 7 of
+those advertise native structured outputs.
+
+**Decision.** Add a free development profile selected purely through
+environment variables — no code path, no branch, no special case — plus
+`LLM_FREE_MODELS_ONLY`, which refuses any model with non-zero published
+pricing at startup *and* before every call.
+
+**Why a hard control rather than a convention.** "Do not make paid calls" is
+a constraint that should not depend on whoever edits `.env` next being
+careful. Checking every pricing field also means a model with zero token
+prices but a non-zero request fee cannot slip through.
+
+**What was explicitly not done.** Three free models are unreachable because
+AgentFlow sends `data_collection=deny` and those endpoints are free precisely
+because they permit training on request data. Reaching them would mean
+relaxing a privacy control to get a cheaper model. That trade was declined;
+`baidu/ernie-5.5-flash-preview:free` works with the control intact. Nothing
+about structured-output validation or security was weakened for the free
+profile.
+
+**Consequence.** Free endpoints are slow (8–35 s per call measured, against
+2–5 s paid) and rate-limited, so `LLM_MAX_ATTEMPTS` drops to 2, the timeout
+rises, and the adapter honours a provider's `Retry-After` hint over its own
+backoff. The free profile is for exercising the workflow without spend; its
+output quality is not comparable to the paid profile and is not presented as
+though it were.

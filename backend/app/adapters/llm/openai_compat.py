@@ -36,7 +36,7 @@ from app.adapters.llm.errors import normalise_exception
 from app.adapters.llm.pricing import estimate_cost_usd
 from app.core.logging import get_logger
 from app.domain.enums import AttemptOutcome, DataCollectionPolicy, LLMProvider, OutputMode
-from app.domain.errors import AdapterError, SchemaValidationError
+from app.domain.errors import AdapterError, ConfigurationError, SchemaValidationError
 from app.domain.nodes import NodeName
 
 log = get_logger(__name__)
@@ -95,6 +95,7 @@ class OpenAICompatibleLLMClient:
         timeout_seconds: float = 90.0,
         max_attempts: int = 3,
         data_collection: DataCollectionPolicy = DataCollectionPolicy.DENY,
+        free_models_only: bool = False,
         app_title: str = "AgentFlow",
         app_url: str = "",
         provider: LLMProvider = LLMProvider.OPENROUTER,
@@ -105,6 +106,7 @@ class OpenAICompatibleLLMClient:
         self._require_schema = require_structured_output
         self._max_attempts = max_attempts
         self._data_collection = data_collection
+        self._free_only = free_models_only
         self._provider = provider
 
         headers: dict[str, str] = {}
@@ -144,6 +146,16 @@ class OpenAICompatibleLLMClient:
 
         for chain_index, model_id in enumerate(chain):
             caps = self._catalogue.require(model_id)
+
+            if self._free_only and not caps.is_free:
+                # Startup validation already refuses this; checking again at
+                # call time means a billable request cannot escape through a
+                # client built by other means.
+                raise ConfigurationError(
+                    f"Refusing to call {model_id}: it is not free and LLM_FREE_MODELS_ONLY is set.",
+                    model=model_id,
+                )
+
             mode = caps.output_mode(require_structured_output=self._require_schema)
             if mode is not OutputMode.JSON_SCHEMA:
                 # Reachable only with the requirement explicitly relaxed; never
@@ -182,7 +194,18 @@ class OpenAICompatibleLLMClient:
                         break  # a different model may still work; stop retrying this one
                     if local_attempt < self._max_attempts:
                         retried = True
-                        await asyncio.sleep(self._backoff(local_attempt))
+                        # Prefer the provider's own hint over a guess: on a
+                        # rate-limited free tier an exponential backoff is
+                        # usually wrong in both directions.
+                        delay = exc.retry_after_seconds or self._backoff(local_attempt)
+                        log.info(
+                            "llm_call_retrying",
+                            node=node.value,
+                            model=model_id,
+                            delay_seconds=round(delay, 2),
+                            honoured_provider_hint=exc.retry_after_seconds is not None,
+                        )
+                        await asyncio.sleep(delay)
                         continue
                     break
                 else:

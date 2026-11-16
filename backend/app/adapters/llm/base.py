@@ -37,6 +37,10 @@ class ModelCapabilities:
     supports_tools: bool
     prompt_usd_per_token: float
     completion_usd_per_token: float
+    #: True only when *every* pricing field the catalogue publishes is zero.
+    #: A non-zero request or image fee makes a nominally "free" model
+    #: billable, so this is not derived from the token prices alone.
+    is_free: bool = False
 
     @property
     def prompt_usd_per_million(self) -> float:

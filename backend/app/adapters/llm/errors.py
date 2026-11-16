@@ -8,6 +8,8 @@ need.
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 
 from app.domain.errors import (
@@ -22,18 +24,52 @@ from app.domain.errors import (
 _RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504, 522, 524})
 
 
-def normalise_http_status(status_code: int, *, detail: str | None = None) -> AdapterError:
+#: Never wait longer than this on a provider's say-so; a free tier can report
+#: a reset hours away, and a research task should fail fast instead.
+MAX_HONOURED_RETRY_AFTER_SECONDS = 60.0
+
+
+def parse_retry_after(headers: Any) -> float | None:
+    """Read a Retry-After hint from provider response headers, if present.
+
+    Accepts the delay-seconds form and the OpenRouter/OpenAI
+    `x-ratelimit-reset` variants. A date-form Retry-After is ignored rather
+    than guessed at.
+    """
+    if headers is None:
+        return None
+    getter = getattr(headers, "get", None)
+    if getter is None:
+        return None
+    for name in ("retry-after", "x-ratelimit-reset-requests", "x-ratelimit-reset"):
+        raw = getter(name)
+        if raw in (None, ""):
+            continue
+        try:
+            seconds = float(str(raw).rstrip("sS"))
+        except ValueError:
+            continue
+        if seconds <= 0:
+            continue
+        return min(seconds, MAX_HONOURED_RETRY_AFTER_SECONDS)
+    return None
+
+
+def normalise_http_status(
+    status_code: int, *, detail: str | None = None, retry_after: float | None = None
+) -> AdapterError:
     """Map an HTTP status from an OpenAI-compatible gateway to a domain error."""
     message = detail or f"The provider returned HTTP {status_code}."
+    kwargs: dict[str, Any] = {"status_code": status_code, "retry_after_seconds": retry_after}
     if status_code in (401, 403):
-        return ProviderAuthError(message, status_code=status_code)
+        return ProviderAuthError(message, **kwargs)
     if status_code == 429:
-        return ProviderRateLimitedError(message, status_code=status_code)
+        return ProviderRateLimitedError(message, **kwargs)
     if status_code == 408:
-        return ProviderTimeoutError(message, status_code=status_code)
+        return ProviderTimeoutError(message, **kwargs)
     if status_code in _RETRYABLE_STATUS or status_code >= 500:
-        return ProviderUnavailableError(message, status_code=status_code)
-    return AdapterError(message, status_code=status_code)
+        return ProviderUnavailableError(message, **kwargs)
+    return AdapterError(message, **kwargs)
 
 
 def normalise_exception(exc: BaseException) -> AdapterError:
@@ -52,7 +88,10 @@ def normalise_exception(exc: BaseException) -> AdapterError:
 
     status = getattr(exc, "status_code", None)
     if isinstance(status, int):
-        return normalise_http_status(status, detail=str(exc) or None)
+        headers = getattr(getattr(exc, "response", None), "headers", None)
+        return normalise_http_status(
+            status, detail=str(exc) or None, retry_after=parse_retry_after(headers)
+        )
 
     # An unrecognised failure is treated as retryable-once rather than fatal:
     # a transient provider quirk should not fail a whole research task, and

@@ -67,6 +67,46 @@ real one; a test asserts it.
 | 7-day data retention purge for visitor research content | M4 |
 | BYOK: visitor-supplied key held in memory only, never persisted or logged | M4 |
 
+## Provider data policy
+
+AgentFlow sends `provider.data_collection=deny` with every request, so routing
+only reaches providers that do not retain request data for training. The
+setting is `LLM_DATA_COLLECTION`.
+
+This has a concrete, measured consequence. Of the seven free models that
+advertise native structured outputs, **three are unreachable with the control
+in place** — they are free precisely because they permit training on request
+data, so provider routing finds no eligible endpoint and returns 404. Using
+them would mean relaxing a privacy control to obtain a cheaper model.
+
+That trade has not been made. It is recorded here rather than taken quietly,
+and it did not need taking:
+`baidu/ernie-5.5-flash-preview:free` works with `data_collection=deny`
+intact, so the free development profile keeps the paid profile's full
+security posture. See [`model-configuration.md`](model-configuration.md).
+
+**A limitation worth stating:** `data_collection=deny` is a routing
+instruction to the gateway. It expresses our requirement and is enforced by
+the gateway's provider selection; AgentFlow cannot independently verify what
+a provider does with a request once it arrives. For genuinely sensitive
+material, neither this setting nor any gateway-level control is a substitute
+for not sending the material at all.
+
+## Credential handling with a live provider
+
+- The key lives only in a gitignored `.env`, read into the process at startup
+  and held as a `SecretStr`. It is never written to a tracked file.
+- `GET /api/meta` reports the provider, the resolved model per node and the
+  catalogue source — never the key, and never any header.
+- The log redactor replaces any value whose key names a credential, matched by
+  segment so that `tokens_in` is not caught while `llm_api_key` is. A test
+  asserts a real log call cannot leak it.
+- Errors returned to clients carry a stable code, a message and a correlation
+  id. Provider error bodies are normalised in the adapter and are not
+  forwarded to clients.
+- gitleaks scans the working tree, the staged set and the full history, locally
+  via pre-commit and again in CI.
+
 ## Deliberate non-goals
 
 No user accounts, SSO, roles or billing — a single-session demo by design. No claim of factual

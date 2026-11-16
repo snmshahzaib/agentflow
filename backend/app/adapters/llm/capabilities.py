@@ -49,6 +49,24 @@ def _coerce_price(raw: Any) -> float:
     return value if value >= 0 else -1.0
 
 
+def _all_prices_zero(pricing: Mapping[str, Any]) -> bool:
+    """Whether every published pricing field is zero.
+
+    Checked across the whole pricing map rather than just the token prices: a
+    non-zero request or image fee would make a nominally free model billable,
+    and the free-only guard must not be fooled by that.
+    """
+    if not pricing:
+        return False
+    for value in pricing.values():
+        try:
+            if float(value) != 0.0:
+                return False
+        except (TypeError, ValueError):
+            continue
+    return True
+
+
 class ModelCatalogue:
     """An immutable view of the models a provider offers."""
 
@@ -84,6 +102,7 @@ class ModelCatalogue:
         for model_id, body in raw.items():
             params = {str(p) for p in body.get("supported_parameters", [])}
             pricing = body.get("pricing", {})
+            is_free = _all_prices_zero(pricing)
             entries[model_id] = ModelCapabilities(
                 model_id=model_id,
                 context_length=int(body.get("context_length") or 0),
@@ -91,6 +110,7 @@ class ModelCatalogue:
                 supports_tools=any(f in params for f in _TOOL_FLAGS),
                 prompt_usd_per_token=_coerce_price(pricing.get("prompt")),
                 completion_usd_per_token=_coerce_price(pricing.get("completion")),
+                is_free=is_free,
             )
         return cls(entries)
 
@@ -119,6 +139,7 @@ class ModelCatalogue:
         *,
         require_structured_output: bool,
         min_context_tokens: int,
+        free_models_only: bool = False,
     ) -> dict[NodeName, ModelCapabilities]:
         """Check every configured model, or raise naming what is wrong.
 
@@ -162,6 +183,11 @@ class ModelCatalogue:
                 problems.append(
                     f"{node.value}: {model_id} supports neither structured outputs nor tool "
                     f"calling, so no output tier is available ({env_var})"
+                )
+            if free_models_only and not caps.is_free:
+                problems.append(
+                    f"{node.value}: {model_id} is not free, and LLM_FREE_MODELS_ONLY is "
+                    f"set. Choose a model whose every published price is zero ({env_var})."
                 )
             if caps.prompt_usd_per_token < 0 or caps.completion_usd_per_token < 0:
                 problems.append(
