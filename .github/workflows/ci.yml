@@ -171,4 +171,6 @@ jobs:
 
       - name: Audit JavaScript dependencies
         working-directory: frontend
-        run: pnpm install --frozen-lockfile && pnpm audit --audit-level high
+        # moderate, not high: a moderate advisory in a devDependency is still
+        # worth surfacing, and this job is advisory so it cannot block work.
+        run: pnpm install --frozen-lockfile && pnpm audit --audit-level moderate
