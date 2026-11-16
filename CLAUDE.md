@@ -104,7 +104,11 @@ Every node follows the same contract. See `.claude/skills/agent-node/SKILL.md`.
 3. Check the task budget **before** the call; a node must fail cleanly rather than overrun.
 4. Persist a `workflow_steps` row plus any domain rows in one transaction, inside the same unit
    of work as the graph checkpoint.
-5. Add a stub response and a fixture so the node runs offline and in CI.
+5. Add a stub response in `app/adapters/llm/stub_responses.json` so the node runs offline
+   and in CI. A missing entry fails loudly by design — an incomplete offline demo must not
+   look complete.
+6. Enforce bounds on the model's output in code, not only in the prompt. The prompt asks;
+   the code guarantees.
 
 ## Error handling
 
@@ -122,13 +126,23 @@ Retrieved web content is untrusted input. See `docs/security.md`.
 - No tools are offered to the model at synthesis time.
 - Validate every model output against a schema; reject, never coerce.
 - Re-bind citation identifiers to sources actually retrieved; drop unknown identifiers.
+- A `supported` or `partial` verdict with no resolvable source must be downgraded to
+  `unsupported`. Support with nothing to point at is not support.
+- Never describe the citation check as fact checking, in code, copy, docs or commit
+  messages. It checks whether a retrieved source *states* a claim.
+- Say "containment", not "prevention", about prompt injection. Whether a model obeys an
+  injected instruction is not measured by this project.
 - `LLM_REQUIRE_STRUCTURED_OUTPUT=true` is the live default and must not be relaxed to make a
   model work.
 
 ## Current status
 
-**Milestone: M1 — walking skeleton and LLM config spine.** M2 may not begin without the
-repository owner's approval.
+**Milestone: M2 complete — fixture research workflow, approval gate, revision, export
+restrictions, restart recovery and prompt-injection containment.** M3 (live OpenRouter) may
+not begin without the repository owner's approval.
+
+Default configuration is offline: `LLM_PROVIDER=stub`, `SEARCH_PROVIDER=fixture`. Output is
+deterministic fixture content and must be labelled as such everywhere it appears.
 
 Definition of done for the project as a whole: working application, complete documentation,
 live public deployment, published GitHub repository, and the owner's explicit approval. A

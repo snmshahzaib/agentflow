@@ -37,11 +37,16 @@ the session that created it. A task belonging to another session returns
 | `POST` | `/api/tasks` | Submit a research task |
 | `GET` | `/api/tasks/{task_id}` | Task detail |
 | `POST` | `/api/tasks/{task_id}/approve` | Approve the current report |
+| `GET` | `/api/tasks/{task_id}/claims` | Per-claim support verdicts |
+| `GET` | `/api/tasks/{task_id}/export` | Export the approved report as Markdown |
+| `GET` | `/api/tasks/{task_id}/report` | Report content |
+| `POST` | `/api/tasks/{task_id}/request-revision` | Send the report back for revision |
+| `GET` | `/api/tasks/{task_id}/sources` | Sources retrieved for this task |
 | `GET` | `/api/tasks/{task_id}/steps` | Workflow timeline |
 | `GET` | `/health` | Liveness probe |
 | `GET` | `/ready` | Readiness probe |
 
-*8 endpoints, from OpenAPI 3.1.0, API version 0.1.0.*
+*13 endpoints, from OpenAPI 3.1.0, API version 0.1.0.*
 
 ## Examples
 
@@ -111,10 +116,47 @@ curl -s http://localhost:8000/api/meta | jq '{llm_provider, offline_mode, models
 stable while new tasks arrive. Pass the returned `next_cursor` back as
 `?cursor=`; a null cursor means the end of the list.
 
+## The approval gate
+
+`GET /api/tasks/{id}/report` is readable as soon as a draft exists: a reviewer
+must be able to read what they are approving. **Export** is what approval
+gates.
+
+```bash
+curl -i -b jar.txt http://localhost:8000/api/tasks/$TASK_ID/export
+# HTTP/1.1 409 Conflict   {"error":{"code":"approval_required", ...}}
+
+curl -s -b jar.txt -X POST http://localhost:8000/api/tasks/$TASK_ID/approve \
+  -H 'Content-Type: application/json' -d '{}'
+
+curl -s -b jar.txt http://localhost:8000/api/tasks/$TASK_ID/export
+# HTTP/1.1 200 OK   Content-Type: text/markdown; charset=utf-8
+```
+
+A revision sends the report back and re-plans the research, so it may retrieve
+different sources and always produces a new version:
+
+```bash
+curl -s -b jar.txt -X POST http://localhost:8000/api/tasks/$TASK_ID/request-revision \
+  -H 'Content-Type: application/json' \
+  -d '{"feedback":"Say more about the licensing boundary."}'
+```
+
+Revisions are capped by `MAX_REVISION_ROUNDS` (default 3) because each round
+re-plans and re-retrieves; exceeding the cap is a 409, not a silent no-op.
+
+## Claim support is not fact checking
+
+`GET /api/tasks/{id}/claims` returns a `support_status` of `supported`,
+`partial` or `unsupported` per claim. That records whether a **retrieved
+source states the claim**. It is not an assessment of whether the claim is
+true, and AgentFlow makes no factual-accuracy guarantee. An `unsupported`
+claim carries no `source_ids`: support with nothing to point at is not
+support, and the system downgrades such a verdict automatically.
+
 ## Not yet implemented
 
-`GET /api/tasks/{id}/sources`, `/claims`, `/report`, `/export`,
-`/request-revision` and `/retry` arrive with the real workflow in M2–M4. They
-are specified in `planning/agentflow-refinement-proposal-v2.md` and are
-deliberately absent here rather than stubbed, so this document describes only
-what exists.
+`POST /api/tasks/{id}/retry` and the session/rate-limit endpoints arrive in
+M4, alongside live search. They are specified in
+`planning/agentflow-refinement-proposal-v2.md` and are deliberately absent
+here rather than stubbed, so this document describes only what exists.

@@ -4,7 +4,7 @@
 specialised agents plan it, retrieve evidence, check every claim against its sources, and
 approve the report before it can be exported.
 
-> **Status: in active development — Milestone 1 of 8.**
+> **Status: in active development — Milestone 2 of 8.**
 > This README documents what is *implemented*, not what is planned. The status table below is
 > the authoritative list. Nothing here claims to be production-tested, and no live deployment
 > exists yet.
@@ -50,11 +50,16 @@ Five nodes, each a single schema-validated LLM call over text the system already
 
 | Node | Responsibility |
 |---|---|
-| `plan` | Decompose the question into at most 4 bounded subtasks |
+| `plan` | Decompose the question into at most `MAX_SUBTASKS` bounded subtasks |
 | `research` | Retrieve sources per subtask through the configured search port (**no LLM call**) |
 | `analyse` | Synthesise findings, each tied to retrieved sources |
 | `citation_check` | Adjudicate whether each claim is supported by a retrieved source |
 | `draft` | Produce the report with citations and a generated limitations section |
+
+Three limits are enforced **after** the model returns rather than merely requested in the
+prompt: the subtask count is truncated, source references are resolved against sources
+actually retrieved (anything that does not resolve is dropped), and a `supported` verdict
+with no resolvable source is downgraded to `unsupported`.
 
 Then the graph **interrupts**. The job ends — no process sits waiting — and the task rests in
 `awaiting_approval` until a human approves or requests a revision, at which point a resume job
@@ -69,7 +74,17 @@ loop. This removes an entire class of runaway-agent and SSRF failure modes.
 **Retrieved web content is untrusted input.** It is delimited and labelled as data, the model
 has no tools at synthesis time, every node returns a schema-validated object, and citation
 identifiers are re-bound against the sources actually retrieved — a model cannot invent a
-citation that survives. See [`docs/security.md`](docs/security.md).
+citation that survives.
+
+The corpus contains a red-team document carrying an injected directive, and it is genuinely
+retrieved on the demo query. The test suite drives a **deliberately compromised model** that
+obeys that directive completely: it still cannot self-approve the report, its fabricated
+citations do not resolve, its "mark everything supported" verdicts are downgraded, and the
+limitations section still reports the truth.
+
+This is **containment, not prevention.** Whether a model obeys an injected instruction is a
+property of that model; this project does not measure it and claims nothing about it. See
+[`docs/security.md`](docs/security.md).
 
 ## Honest terminology
 
@@ -99,8 +114,8 @@ variables and validated against the provider catalogue at startup — see
 
 | Milestone | Scope | Status |
 |---|---|---|
-| M1 | Walking skeleton + LLM config spine | **complete — awaiting review** |
-| M2 | Fixture vertical slice, approval gate, restart recovery | not started |
+| M1 | Walking skeleton + LLM config spine | complete |
+| M2 | Fixture research workflow, approval gate, restart recovery | **complete — awaiting review** |
 | M3 | Live OpenRouter gateway, capability negotiation, cost ledger | not started |
 | M4 | Tavily search, URL safety, rate limits, retention | not started |
 | M5 | Complete frontend | not started |
@@ -108,19 +123,23 @@ variables and validated against the provider catalogue at startup — see
 | M7 | Deployment and public repository | not started |
 | M8 | Completion report | not started |
 
-## What exists today (end of M1)
+## What exists today (end of M2)
 
-Working and verified end to end in Docker: task submission with idempotency, durable
-execution by a separate worker process, the five-node graph recording a workflow timeline,
-the human approval gate (`interrupt()` ends the job — the pause costs no running compute),
-resume from a Postgres checkpoint in a separate job, session-scoped access, the full error
-envelope with correlation ids, and the provider-agnostic LLM gateway with capability
-validation and cross-vendor fallback.
+The complete research workflow runs end to end and is verified in Docker: submit a question,
+and the five nodes plan it, retrieve sources, synthesise findings, check each claim against
+those sources, and draft a report with citations and a generated limitations section. The
+workflow then pauses; a reviewer can read the report, send it back with a note, or approve
+it — and only an approved report can be exported.
 
-**The five graph nodes are skeletons.** They record the timeline and prove the durable
-execution path, but they do not yet plan, retrieve, analyse, check citations or draft. Every
-step row they write is marked `skeleton` so their output cannot be mistaken for research.
-Real node implementations, sources, reports, claims and export arrive in M2–M4.
+**Results are deterministic fixture output, not AI research.** The default configuration
+runs a stub model adapter against a committed corpus of synthetic documents. No language
+model is called and no web search happens. Every report carries a notice saying so, every
+source is labelled as a fixture, and the API reports `offline_mode: true`. Live models
+arrive in M3 and live web search in M4.
+
+What that buys: the whole system — including approval, revision, export restrictions,
+restart recovery and prompt-injection containment — is exercisable by anyone who clones the
+repository, with no API keys and no spend.
 
 ## Quick start
 
@@ -149,12 +168,15 @@ locally — a clash shows up as `Bind for 127.0.0.1:5433 failed: port is already
 Verify the whole stack end to end:
 
 ```bash
-scripts/smoke-test.sh http://localhost:8080
+scripts/smoke-test.sh http://localhost:8080            # submit -> gate -> approve
+scripts/restart-recovery-test.sh http://localhost:8080 # kill the worker, prove recovery
 ```
 
-It submits a task, waits for the approval gate, approves it, and checks that idempotency,
-double-approval rejection and session scoping all behave. It prints `SMOKE TEST PASSED` or
-exits non-zero.
+The first submits a task, waits for the approval gate, approves it, and checks idempotency,
+double-approval rejection and session scoping. The second restarts the worker mid-flight and
+again while the task is parked at the gate, then exercises revision, approval and export —
+asserting that no step, source or report is duplicated. Each prints `PASSED` or exits
+non-zero.
 
 See [`docs/development.md`](docs/development.md) for running the API, worker and frontend
 outside Docker, and [`docs/testing.md`](docs/testing.md) for the test commands.

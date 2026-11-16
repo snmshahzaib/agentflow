@@ -74,13 +74,45 @@ Five nodes; only four call an LLM.
 
 | Node | Input | Output | LLM |
 |---|---|---|---|
-| `plan` | question, constraints | ≤4 bounded subtasks | yes |
-| `research` | subtasks | sources with excerpts | **no** — search port |
-| `analyse` | sources | findings tied to sources | yes |
+| `plan` | question, constraints, reviewer note | ≤`MAX_SUBTASKS` subtasks + a search query each | yes |
+| `research` | search queries | sources, deduplicated per task by URL digest | **no** — search port |
+| `analyse` | sources | findings, each bound to retrieved sources | yes |
 | `citation_check` | findings, sources | per-claim support verdicts | yes |
-| `draft` | findings, verdicts | report markdown + limitations | yes |
+| `draft` | verdicts | report + claims + evidence links | yes |
 
 Then the graph interrupts and the job ends. See [`diagrams/approval-flow.md`](diagrams/approval-flow.md).
+
+Three limits are enforced by our code **after** the model returns, rather than
+only requested in the prompt:
+
+- the subtask count is truncated to `MAX_SUBTASKS`, so a model returning
+  twelve subtasks cannot multiply retrieval and spend;
+- source references are resolved against sources actually retrieved, and
+  anything that does not resolve is dropped;
+- a `supported` or `partial` verdict with no resolvable source is downgraded
+  to `unsupported`.
+
+### Revision
+
+A reviewer sending a report back re-enters the graph at `plan`, not at
+`draft`: the note can change the plan and bring in different sources, which is
+usually what a reviewer actually wants. Each round re-plans and re-retrieves,
+so rounds are capped by `MAX_REVISION_ROUNDS`.
+
+The report version is derived from the revision round rather than from a
+counter. That is what makes the draft node idempotent — a re-run within a
+round targets the same version and rewrites it instead of inserting a second
+report.
+
+### Recovery from abrupt worker death
+
+A worker killed with SIGKILL never runs its release path. The task lock
+therefore runs on a short TTL refreshed by a heartbeat, so a dead worker's
+lock expires in minutes; a cron sweep then re-queues tasks that look stalled
+and hold no lock. A task a live worker owns is left alone — adopting it would
+create the second writer the lock exists to prevent — and tasks awaiting
+approval are never adopted, since re-running one would discard the report
+under review.
 
 ## State ownership
 

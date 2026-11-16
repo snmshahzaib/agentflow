@@ -1,15 +1,15 @@
 # Testing
 
-Every number on this page came from a run on 2026-11-15. Nothing here is
+Every number on this page came from a run on 2026-11-16. Nothing here is
 projected or aspirational; where coverage is missing, it says so.
 
 ## Commands
 
 ```bash
 cd backend
-uv run pytest                        # all 195 tests
-uv run pytest -m "not integration"   # 140 tests, no Postgres or Redis needed
-uv run pytest -m integration         # 55 tests, needs Postgres + Redis
+uv run pytest                        # all 283 tests
+uv run pytest -m "not integration"   # 175 tests, no Postgres or Redis needed
+uv run pytest -m integration         # 108 tests, needs Postgres + Redis
 uv run pytest --cov=app --cov-report=term
 uv run pytest tests/test_llm_registry.py::TestStubRuntime -q   # one class
 ```
@@ -22,28 +22,32 @@ pnpm typecheck       # tsc -b
 ```
 
 ```bash
-make verify                 # lint, types, import boundaries, secrets, tests
-scripts/smoke-test.sh       # end-to-end against a running stack
+make verify                          # lint, types, boundaries, secrets, tests
+scripts/smoke-test.sh                # end-to-end against a running stack
+scripts/restart-recovery-test.sh     # worker restart recovery, real Docker
 ```
 
-## Results (measured 2026-11-15)
+## Results (measured 2026-11-16)
 
 | Suite | Count | Result |
 |---|---|---|
-| Backend unit (`-m "not integration"`) | 140 | pass |
-| Backend integration (Postgres + Redis) | 55 | pass |
-| **Backend total** | **195** | **pass in 10.6 s** |
-| Frontend (Vitest) | 10 | pass in 1.9 s |
-| ESLint (`--max-warnings 0`) | — | clean |
-| `tsc -b` | — | clean |
+| Backend unit (`-m "not integration"`) | 175 | pass in 5.4 s |
+| Backend integration (Postgres + Redis) | 108 | pass in 23.7 s |
+| **Backend total** | **283** | **pass** |
+| Frontend (Vitest) | 17 | pass |
+| ESLint (`--max-warnings 0`) / `tsc -b` | — | clean |
+| Frontend production build | — | succeeds |
 | ruff check + format | — | clean |
-| mypy (52 source files) | — | clean |
+| mypy (64 source files) | — | clean |
 | import-linter | 4 contracts | all kept |
-| gitleaks (tree + full history) | — | no leaks |
+| gitleaks (history + staged) | — | no leaks |
 | pip-audit | 69 packages | no known vulnerabilities |
-| End-to-end smoke test | — | pass |
+| `scripts/smoke-test.sh` | — | passes |
+| `scripts/restart-recovery-test.sh` | — | passes against Docker |
 
-Backend line coverage: **84%** (1,599 statements, 251 uncovered).
+Backend line coverage: **90%** (2,314 statements, 236 uncovered), up from 84%
+at M1. `app/workers/jobs.py` went from 0% to 88% and `app/workers/locks.py`
+to 100%.
 
 ## What the tests actually assert
 
@@ -78,12 +82,36 @@ is still tried; an unusable fallback is dropped rather than taking down a
 working primary; and the catalogue degrading to the committed snapshot when the
 provider is unreachable.
 
-**Graph** (`test_graph.py`) — the graph compiles with every node wired in the
-documented order (which also guards the single `type: ignore` in
-`builder.py`: LangGraph's stubs reject an async node callable its runtime
-accepts, so a stub change fails loudly); a node records a step and advances
-the task in one transaction; re-running a node records a new attempt rather
-than overwriting history; and the research node performs no model call.
+**Graph units** (`test_graph.py`) — assembly and ordering (which also guards
+the single `type: ignore` in `builder.py`); approval routing, including that
+an absent decision ends the run rather than looping forever; the untrusted
+fence, including that content containing the delimiter cannot close it; and
+citation binding, including that fabricated, malformed and out-of-range labels
+are dropped rather than raising.
+
+**The workflow** (`test_workflow.py`) — runs the real graph against a real
+database: every node records a step; sources are persisted, deduplicated and
+labelled as fixtures; a report is written with claims and evidence links;
+**unsupported claims carry no evidence link**; the report states its
+provenance and limitations; the ledger records one call per LLM node and the
+task counters match it; two runs of the same question produce byte-identical
+reports; and a revision produces v2 with v1 superseded and both attempts
+preserved in the timeline.
+
+**Recovery and idempotency** (`test_recovery.py`) — the real arq handlers
+against real Postgres and Redis: a task runs to the gate; a job for a purged
+task is reported rather than raising; a second delivery is refused while the
+lock is held; re-delivery after completion does not re-run anything; a
+duplicate resume creates no second report; **a fresh worker resumes from the
+persisted checkpoint** with no node re-running; a revision after restart
+produces exactly one new version; a re-run of the draft node rewrites its
+version instead of duplicating it; a failing node records a failed step; and
+the orphan sweep re-queues a stalled unlocked task while leaving alone one a
+live worker holds, one updated recently, and one awaiting approval.
+
+**Locking** (`test_worker_locks.py`) — contention, release on exception,
+refusing to release a lock no longer owned, the TTL, and the heartbeat that
+keeps a long task's lock alive and stops when another worker takes over.
 
 **Locking** (`test_worker_locks.py`) — a second holder is refused while the
 first holds the lock; the lock is released even when the body raises, so a
@@ -96,9 +124,20 @@ idempotency; validation errors in the standard envelope; session scoping
 approval only from `awaiting_approval`, with 409 otherwise; and correlation-id
 echo including sanitising an over-long inbound header.
 
+**Injection containment** (`test_injection.py`) — see `docs/security.md` for
+what these do and do not establish. They confirm the red-team document is
+really retrieved, that injected text cannot escape the data fence, that the
+model is never given tools, and then drive a **deliberately compromised
+model** that obeys the injected directive completely: it still cannot
+self-approve, its fabricated citations do not resolve, its "everything is
+supported" verdicts are downgraded, and the limitations section still reports
+the truth.
+
 **Frontend** (Vitest) — the provenance banner states that offline output is
 not from a live model; node descriptions never claim a claim is verified as
-true; a retried node stays visible in the timeline; client-side validation
+true; the claim table says support is not a truth judgement and counts
+unsupported claims; the export link is absent before approval and present
+after; a retried node stays visible in the timeline; client-side validation
 blocks a request rather than relying on a 422; and API errors surface their
 correlation id.
 
@@ -119,17 +158,44 @@ in CI.
 Integration tests run inside a transaction that is rolled back, so they cannot
 leak rows into each other.
 
+## Restart recovery, verified in Docker
+
+`scripts/restart-recovery-test.sh` runs against the real compose stack, not
+mocks:
+
+1. a task is submitted and the worker is restarted **mid-flight**; the task
+   still reaches the gate, every node completes, no `(node, attempt)` pair
+   repeats, no URL is stored twice, and exactly one report version exists;
+2. the worker is restarted again while the task is **parked at the gate**; the
+   task survives, because its state is in PostgreSQL rather than the worker's
+   memory;
+3. export is refused with 409, a revision is requested, v2 is produced from a
+   checkpoint written before the restart, the task is approved, and the export
+   contains its limitations and provenance;
+4. a second approval is rejected with 409.
+
+A node interrupted mid-execution **does** re-run — the worker can die after a
+node finishes but before LangGraph checkpoints it — and that is correct: the
+re-run is recorded as a new attempt and the timeline shows both. One observed
+run did exactly that (`plan` and `research` at attempt 2) and still produced
+one report and eight distinct sources.
+
+The hard-kill case was verified separately: SIGKILLing a worker left its task
+stranded in `running` with 879 s left on its lock, which is what motivated the
+lock heartbeat and the orphan sweep. After the fix, manufacturing that exact
+state produced an `orphaned_task_requeued` log line and the task completed.
+
 ## Known gaps
 
-- **`app/workers/jobs.py` has 0% unit coverage.** The arq job handlers are
-  exercised only by `scripts/smoke-test.sh` against a live stack. Covering
-  them needs a fake arq context and checkpointer; it belongs with M2, where
-  restart recovery is an acceptance criterion.
 - **No browser-level end-to-end test yet.** Planned for M5 (one Playwright
   happy path), once there is a full UI to drive.
 - **The live provider path is untested against a real gateway.** Every
   gateway test drives the real adapter logic against a fake transport. A
-  genuine OpenRouter call is M3, which is also where the injection red-team
-  test runs against two different vendors' models.
+  genuine OpenRouter call is M3, which is also where the red-team fixture is
+  run against two different vendors' models.
+- **Injection tests prove containment, not prevention.** Whether a model obeys
+  an injected instruction is not measured here and is not claimed anywhere.
+- **The orphan sweep's timing is not tested end-to-end in CI.** Its logic is
+  covered by four unit tests; the cron firing was verified by hand in Docker.
 - **No performance or load measurements exist.** None are claimed anywhere in
   this repository.

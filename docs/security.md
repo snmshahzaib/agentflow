@@ -49,7 +49,9 @@ content, which eliminates the SSRF surface rather than mitigating it.
 
 Defence in depth remains: every stored source URL is validated (scheme allowlist; loopback,
 private, link-local and cloud-metadata hosts rejected; no embedded credentials; length capped),
-and the frontend renders links with `rel="noopener noreferrer"`. *(URL validator: M4.)*
+and the frontend renders links with `rel="noopener noreferrer"`. *(URL validator: M4.)* Fixture sources use an unmistakable
+`fixtures.agentflow.test` host, so a fixture URL can never be mistaken for a
+real one; a test asserts it.
 
 ## Application controls
 
