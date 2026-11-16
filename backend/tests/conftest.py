@@ -151,14 +151,16 @@ async def create_task_row(
     import uuid as _uuid
 
     from app.db.models import ResearchTask
-    from app.domain.enums import LLMProvider, SearchMode
 
     async with deps.session_factory() as session, session.begin():
         task = ResearchTask(
             session_id=session_id or f"sess-{_uuid.uuid4().hex[:8]}",
             question=question,
-            search_mode=SearchMode.FIXTURE,
-            llm_provider=LLMProvider.STUB,
+            # Taken from the resolved configuration, exactly as TaskService
+            # does. Hardcoding STUB here made a live run's report correctly
+            # describe itself as stub-produced.
+            search_mode=deps.settings.search_provider,
+            llm_provider=deps.settings.llm_provider,
             max_tokens_budget=deps.settings.llm_max_tokens_per_task,
             max_calls_budget=deps.settings.llm_max_calls_per_task,
         )
@@ -177,10 +179,16 @@ async def create_task_row(
 #: than quietly spending. Approved for M3: $5.
 LIVE_TEST_BUDGET_USD = float(os.environ.get("M3_TEST_BUDGET_USD", "5.00"))
 
+#: Captured at import, before the environment-isolation fixture strips it.
+#: That fixture keeps offline tests hermetic; live tests legitimately need the
+#: real credential, so it is read once here rather than at fixture time.
+LIVE_API_KEY = os.environ.get("LLM_API_KEY", "").strip()
+LIVE_BASE_URL = os.environ.get("LLM_BASE_URL", "https://openrouter.ai/api/v1")
+
 LIVE_ENABLED = (
     os.environ.get("LLM_PROVIDER", "").lower() == "openrouter"
-    and bool(os.environ.get("LLM_API_KEY", "").strip())
-    and not os.environ.get("LLM_API_KEY", "").startswith("__")
+    and bool(LIVE_API_KEY)
+    and not LIVE_API_KEY.startswith("__")
 )
 
 #: Cheap model used for the bulk of live assertions. Overridable so the suite
@@ -188,6 +196,9 @@ LIVE_ENABLED = (
 LIVE_DEV_MODEL = os.environ.get("M3_DEV_MODEL", "anthropic/claude-haiku-5.5")
 #: A model from a different vendor, for cross-provider assertions.
 LIVE_ALT_MODEL = os.environ.get("M3_ALT_MODEL", "openai/gpt-6-luna")
+#: When set, refuse any model that is not free. Used by the free development
+#: profile so a billable call cannot happen during free-tier testing.
+LIVE_FREE_ONLY = os.environ.get("M3_FREE_ONLY", "").lower() in {"1", "true", "yes"}
 
 
 async def live_spend_so_far(database_url: str) -> float:
@@ -242,9 +253,13 @@ async def live_deps(migrated_database: str, live_budget_guard: float) -> AsyncIt
         _env_file=None,
         app_env="test",
         llm_provider="openrouter",
-        llm_api_key=os.environ["LLM_API_KEY"],
-        llm_base_url=os.environ.get("LLM_BASE_URL", "https://openrouter.ai/api/v1"),
+        llm_api_key=LIVE_API_KEY,
+        llm_base_url=LIVE_BASE_URL,
         llm_model_default=LIVE_DEV_MODEL,
+        llm_free_models_only=LIVE_FREE_ONLY,
+        # Free tiers are rate-limited; hammering them is both rude and
+        # counter-productive.
+        llm_max_attempts=2 if LIVE_FREE_ONLY else 3,
         search_provider="fixture",
         database_url=migrated_database,
     )
@@ -260,3 +275,40 @@ async def live_deps(migrated_database: str, live_budget_guard: float) -> AsyncIt
     finally:
         await runtime.client.aclose()
         await engine.dispose()
+
+
+#: Markers in a provider's 429 body that mean "your daily allowance is gone",
+#: as distinct from "slow down".
+_QUOTA_EXHAUSTED_MARKERS = (
+    "free-models-per-day",
+    "per-day",
+    "daily limit",
+    "quota",
+)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item: pytest.Item):  # type: ignore[no-untyped-def]
+    """Report an exhausted provider allowance as a skip, not a failure.
+
+    A live test that cannot run because the day's free quota is spent has not
+    found a defect; reporting it as a failure buries real ones. A plain rate
+    limit still fails, because the adapter is supposed to handle those.
+    """
+    outcome = yield
+    if item.get_closest_marker("live") is None:
+        return
+    excinfo = getattr(outcome, "excinfo", None)
+    if excinfo is None:
+        return
+    message = str(excinfo[1])
+    if "429" not in message and "rate_limit" not in message.lower():
+        return
+    if not any(marker in message.lower() for marker in _QUOTA_EXHAUSTED_MARKERS):
+        return
+    outcome.force_exception(
+        pytest.skip.Exception(
+            "provider free-tier allowance exhausted for today; cannot run live test",
+            _use_item_location=True,
+        )
+    )

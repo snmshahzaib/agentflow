@@ -14,17 +14,19 @@ the model rather than to variable web results.
 
 from __future__ import annotations
 
+import os
 import uuid
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy import select
 
 from app.adapters.llm.capabilities import ModelCatalogue, fetch_catalogue
 from app.adapters.llm.openai_compat import OpenAICompatibleLLMClient
 from app.adapters.llm.registry import build_llm_runtime
 from app.core.config import Settings
-from app.db.models import LLMCall, Report, ReportClaim, ResearchTask, Source
+from app.db.models import ClaimSource, LLMCall, Report, ReportClaim, ResearchTask, Source
 from app.domain.enums import (
     AttemptOutcome,
     LLMProvider,
@@ -37,6 +39,7 @@ from app.domain.nodes import LLM_NODES, NodeName
 from app.graph.builder import build_graph
 from app.graph.deps import NodeDeps
 from app.graph.schemas import PlanOutput
+from app.workers.jobs import run_task
 from tests.conftest import (
     LIVE_ALT_MODEL,
     LIVE_DEV_MODEL,
@@ -58,6 +61,12 @@ QUESTION = "Compare three open-source workflow orchestration frameworks for a sm
 
 
 async def run_to_gate(deps: NodeDeps, task_id: str) -> object:
+    """Run the graph directly, returning the compiled graph.
+
+    Used where a test only needs the graph's own behaviour. Tests that assert
+    on the *task row* must go through `run_live_task` instead: setting the
+    status is the worker's job, not the graph's.
+    """
     graph = build_graph(deps, checkpointer=InMemorySaver())
     config = {"configurable": {"thread_id": task_id}}
     await graph.ainvoke(
@@ -66,12 +75,55 @@ async def run_to_gate(deps: NodeDeps, task_id: str) -> object:
     return graph
 
 
-class TestLiveWorkflow:
-    """The headline M3 criterion: the whole workflow on real models."""
+async def run_live_task(deps: NodeDeps, task_id: str, redis: object, dsn: str) -> str:
+    """Execute a task through the real arq job handler.
 
-    async def test_the_workflow_completes_against_real_models(self, live_deps: NodeDeps) -> None:
+    This is the production path: lock, graph, checkpoint, status settlement.
+    A bare graph invocation leaves the task row untouched, so asserting on
+    status after one would be testing the test rather than the system.
+    """
+    async with AsyncPostgresSaver.from_conn_string(dsn) as checkpointer:
+        await checkpointer.setup()
+        ctx = {
+            "redis": redis,
+            "session_factory": deps.session_factory,
+            "node_deps": deps,
+            "checkpointer": checkpointer,
+            "settings": deps.settings,
+        }
+        return await run_task(ctx, task_id)
+
+
+class TestLiveWorkflow:
+    """The headline M3 criterion: the whole workflow on real models.
+
+    **One** workflow run, asserted from several angles. Deliberately not three
+    tests doing three runs: a free tier's rate limit is a shared resource, and
+    four extra model calls to re-derive the same facts is waste on any tier.
+    """
+
+    async def test_the_live_workflow_produces_a_grounded_report(
+        self, live_deps: NodeDeps, migrated_database: str
+    ) -> None:
+        from redis.asyncio import Redis
+
+        redis = Redis.from_url(
+            os.environ.get("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True
+        )
         task_id = await create_task_row(live_deps, question=QUESTION)
-        await run_to_gate(live_deps, task_id)
+        try:
+            outcome = await run_live_task(
+                live_deps,
+                task_id,
+                redis,
+                migrated_database.replace("postgresql+asyncpg://", "postgresql://", 1),
+            )
+        finally:
+            await redis.aclose()
+
+        # --- the worker settled the task, because this went through the real
+        # job handler rather than a bare graph invocation
+        assert outcome == TaskStatus.AWAITING_APPROVAL.value
 
         async with live_deps.session_factory() as session:
             task = await session.get(ResearchTask, uuid.UUID(task_id))
@@ -81,59 +133,66 @@ class TestLiveWorkflow:
             report = await session.scalar(
                 select(Report).where(Report.task_id == uuid.UUID(task_id))
             )
+            calls = (
+                await session.scalars(select(LLMCall).where(LLMCall.task_id == uuid.UUID(task_id)))
+            ).all()
+            claims = (
+                (
+                    await session.scalars(
+                        select(ReportClaim).where(ReportClaim.report_id == report.id)
+                    )
+                ).all()
+                if report is not None
+                else []
+            )
 
         assert task is not None
         assert task.status is TaskStatus.AWAITING_APPROVAL
-        assert sources, "the fixture corpus should still supply sources"
+
+        # --- fixture search still supplied the evidence; M3 is the live
+        # *model* milestone and live search belongs to M4
+        assert sources
+        assert all(s.is_fixture for s in sources)
+
+        # --- a real report, with claims the model actually produced
         assert report is not None
         assert report.version == 1
         assert len(report.content_markdown) > 500
-
-    async def test_claims_come_back_with_real_verdicts_and_evidence(
-        self, live_deps: NodeDeps
-    ) -> None:
-        task_id = await create_task_row(live_deps, question=QUESTION)
-        await run_to_gate(live_deps, task_id)
-
-        async with live_deps.session_factory() as session:
-            report = await session.scalar(
-                select(Report).where(Report.task_id == uuid.UUID(task_id))
-            )
-            assert report is not None
-            claims = (
-                await session.scalars(select(ReportClaim).where(ReportClaim.report_id == report.id))
-            ).all()
-
         assert claims, "a live run should produce checked claims"
-        # Containment still applies to a real model: a claim it marked
-        # supported must point at a source that actually exists.
-        for claim in claims:
-            if claim.support_status is SupportStatus.UNSUPPORTED:
-                continue
-            assert claim.rationale is not None
 
-    async def test_the_report_labels_live_models_and_fixture_sources(
-        self, live_deps: NodeDeps
-    ) -> None:
-        """The distinction the milestone turns on: real AI analysis over
-        fixture search must say exactly that."""
-        task_id = await create_task_row(live_deps, question=QUESTION)
-        await run_to_gate(live_deps, task_id)
-
+        # --- containment still applies to a real model: nothing marked
+        # supported may cite a source that was never retrieved
+        retrieved = {s.id for s in sources}
         async with live_deps.session_factory() as session:
-            report = await session.scalar(
-                select(Report).where(Report.task_id == uuid.UUID(task_id))
-            )
-        assert report is not None
-        markdown = report.content_markdown
+            links = (
+                await session.execute(
+                    select(ClaimSource.claim_id, ClaimSource.source_id).where(
+                        ClaimSource.claim_id.in_([c.id for c in claims])
+                    )
+                )
+            ).all()
+        for _, source_id in links:
+            assert source_id in retrieved
 
+        # --- the distinction the milestone turns on: real AI analysis over
+        # fixture sources must say exactly that, and must not claim a stub
+        markdown = report.content_markdown
         assert "## Limitations" in markdown
-        # Sources are fixtures even though the model is live.
         assert "fixture corpus" in markdown
-        # And the limitations must name the model that actually wrote it,
-        # rather than claiming a stub produced it.
         assert "deterministic stub adapter" not in markdown
         assert "Written by model(s)" in markdown
+
+        # --- the ledger recorded real usage for every model node
+        assert {c.node for c in calls} == set(LLM_NODES)
+        for call in calls:
+            assert call.provider is LLMProvider.OPENROUTER
+            assert call.model_requested
+            assert call.model_served, "the gateway reports which model served the call"
+            assert call.tokens_in > 0 and call.tokens_out > 0
+            assert call.latency_ms is not None and call.latency_ms > 0
+            assert call.cost_usd_estimate is not None
+        assert task.calls_used == len(calls)
+        assert task.tokens_used == sum(c.tokens_in + c.tokens_out for c in calls)
 
 
 class TestStructuredOutput:
@@ -160,29 +219,8 @@ class TestStructuredOutput:
 
 
 class TestUsageLedger:
-    async def test_real_usage_is_recorded_for_every_node(self, live_deps: NodeDeps) -> None:
-        task_id = await create_task_row(live_deps, question=QUESTION)
-        await run_to_gate(live_deps, task_id)
-
-        async with live_deps.session_factory() as session:
-            calls = (
-                await session.scalars(select(LLMCall).where(LLMCall.task_id == uuid.UUID(task_id)))
-            ).all()
-            task = await session.get(ResearchTask, uuid.UUID(task_id))
-
-        assert {c.node for c in calls} == set(LLM_NODES)
-        for call in calls:
-            assert call.provider is LLMProvider.OPENROUTER
-            assert call.model_requested
-            assert call.model_served, "the gateway reports which model served the call"
-            assert call.tokens_in > 0 and call.tokens_out > 0
-            assert call.latency_ms is not None and call.latency_ms > 0
-            assert call.cost_usd_estimate is not None and call.cost_usd_estimate > 0
-
-        assert task is not None
-        assert task.calls_used == len(calls)
-        assert task.tokens_used == sum(c.tokens_in + c.tokens_out for c in calls)
-        assert float(task.cost_usd_estimate) > 0
+    """Per-node model selection. Ledger assertions for a full run live in
+    TestLiveWorkflow, which already pays for one."""
 
     async def test_per_node_model_selection_reaches_the_provider(self, live_deps: NodeDeps) -> None:
         """Configuring a different model for one node must actually change

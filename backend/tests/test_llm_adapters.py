@@ -15,7 +15,11 @@ from pydantic import BaseModel
 
 from app.adapters.llm.base import ModelCapabilities
 from app.adapters.llm.capabilities import ModelCatalogue
-from app.adapters.llm.errors import normalise_exception, normalise_http_status
+from app.adapters.llm.errors import (
+    normalise_exception,
+    normalise_http_status,
+    parse_retry_after,
+)
 from app.adapters.llm.openai_compat import OpenAICompatibleLLMClient, strictify_schema
 from app.adapters.llm.stub import StubLLMClient
 from app.domain.enums import AttemptOutcome, LLMProvider, OutputMode
@@ -446,3 +450,123 @@ class TestCapabilitiesHelper:
         caps = ModelCapabilities("m", 1_000, True, True, 2e-6, 1e-5)
         assert caps.prompt_usd_per_million == pytest.approx(2.0)
         assert caps.completion_usd_per_million == pytest.approx(10.0)
+
+
+class TestFreeOnlyGuard:
+    """`LLM_FREE_MODELS_ONLY` has to be a control, not an intention: it is
+    what makes "no paid calls" true by construction rather than by care."""
+
+    def test_a_model_is_free_only_when_every_price_is_zero(self) -> None:
+        """A non-zero request or image fee makes a nominally free model
+        billable, so token prices alone are not enough."""
+        cat = ModelCatalogue.from_entries(
+            {
+                "vendor/truly-free": {
+                    "context_length": 1_000_000,
+                    "supported_parameters": ["structured_outputs"],
+                    "pricing": {"prompt": "0", "completion": "0", "request": "0"},
+                },
+                "vendor/free-tokens-paid-request": {
+                    "context_length": 1_000_000,
+                    "supported_parameters": ["structured_outputs"],
+                    "pricing": {"prompt": "0", "completion": "0", "request": "0.001"},
+                },
+            }
+        )
+        assert cat.require("vendor/truly-free").is_free is True
+        assert cat.require("vendor/free-tokens-paid-request").is_free is False
+
+    def test_validation_refuses_a_priced_model_in_free_only_mode(self) -> None:
+        cat = ModelCatalogue.from_entries(
+            {
+                "vendor/paid": {
+                    "context_length": 1_000_000,
+                    "supported_parameters": ["structured_outputs"],
+                    "pricing": {"prompt": "0.000002", "completion": "0.00001"},
+                }
+            }
+        )
+        with pytest.raises(Exception, match="is not free"):
+            cat.validate_node_models(
+                dict.fromkeys(sorted(NodeName.__members__.values()), "vendor/paid"),
+                require_structured_output=True,
+                min_context_tokens=200_000,
+                free_models_only=True,
+            )
+
+    async def test_the_adapter_refuses_a_priced_model_at_call_time(self) -> None:
+        """Defence in depth: a client built by other means must not be able
+        to issue a billable request."""
+        client, fake = build_client(
+            [FakeResponse('{"subtasks":[],"rationale":"r"}')], free_models_only=True
+        )
+        with pytest.raises(Exception, match="not free"):
+            await client.complete_structured(node=NodeName.PLAN, schema=Plan, system="s", user="u")
+        assert fake.calls == [], "no request may be sent for a priced model"
+
+
+class TestRetryAfter:
+    @pytest.mark.parametrize(
+        ("header", "expected"),
+        [
+            ({"retry-after": "7"}, 7.0),
+            ({"retry-after": "7s"}, 7.0),
+            ({"x-ratelimit-reset": "3"}, 3.0),
+            ({"retry-after": "99999"}, 60.0),  # capped
+            ({"retry-after": "0"}, None),
+            ({"retry-after": "Wed, 21 Oct 2026 07:28:00 GMT"}, None),  # date form ignored
+            ({}, None),
+            (None, None),
+        ],
+    )
+    def test_provider_hints_are_parsed_or_ignored_safely(
+        self, header: Any, expected: float | None
+    ) -> None:
+        assert parse_retry_after(header) == expected
+
+    def test_a_rate_limit_error_carries_the_hint(self) -> None:
+        error = normalise_http_status(429, retry_after=12.0)
+        assert isinstance(error, ProviderRateLimitedError)
+        assert error.retry_after_seconds == 12.0
+        assert error.retryable
+
+    async def test_the_retry_loop_waits_for_the_hinted_delay(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On a free tier an exponential backoff guess is usually wrong in
+        both directions, so the provider's own number wins."""
+        slept: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            slept.append(seconds)
+
+        monkeypatch.setattr("app.adapters.llm.openai_compat.asyncio.sleep", fake_sleep)
+        client, _ = build_client(
+            [
+                normalise_http_status(429, retry_after=4.0),
+                FakeResponse('{"subtasks":["a"],"rationale":"r"}'),
+            ],
+            fallback_models=[],
+        )
+        await client.complete_structured(node=NodeName.PLAN, schema=Plan, system="s", user="u")
+        assert slept == [4.0]
+
+    async def test_without_a_hint_it_falls_back_to_jittered_backoff(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        slept: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            slept.append(seconds)
+
+        monkeypatch.setattr("app.adapters.llm.openai_compat.asyncio.sleep", fake_sleep)
+        client, _ = build_client(
+            [
+                normalise_http_status(503),
+                FakeResponse('{"subtasks":["a"],"rationale":"r"}'),
+            ],
+            fallback_models=[],
+        )
+        await client.complete_structured(node=NodeName.PLAN, schema=Plan, system="s", user="u")
+        assert len(slept) == 1
+        assert 0.0 <= slept[0] <= 8.0
