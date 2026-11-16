@@ -228,8 +228,17 @@ class TestOutputTierSelection:
     def test_prompt_json_is_only_reachable_with_strictness_relaxed(self) -> None:
         caps = ModelCapabilities("m", 1_000_000, False, False, 1e-6, 1e-6)
         assert caps.output_mode(require_structured_output=False) is OutputMode.PROMPT_JSON
-        with pytest.raises(ValueError, match="neither structured outputs nor tool calling"):
+        with pytest.raises(ModelCapabilityError, match="does not support native structured"):
             caps.output_mode(require_structured_output=True)
+
+    def test_strict_mode_refuses_tier_two_rather_than_downgrading(self) -> None:
+        """A tools-only model satisfies a weaker guarantee than the caller
+        asked for. Returning tier 2 here would be the silent downgrade the
+        setting exists to prevent."""
+        tools_only = ModelCapabilities("m", 1_000_000, False, True, 1e-6, 1e-6)
+        assert tools_only.output_mode(require_structured_output=False) is OutputMode.TOOL_CALL
+        with pytest.raises(ModelCapabilityError, match="prompt-injection boundary"):
+            tools_only.output_mode(require_structured_output=True)
 
 
 class TestCostEstimation:

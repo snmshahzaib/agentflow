@@ -166,3 +166,97 @@ async def create_task_row(
         await session.flush()
         task.graph_thread_id = str(task.id)
         return str(task.id)
+
+
+# ---------------------------------------------------------------------------
+# Live provider fixtures (billable; skipped unless explicitly configured)
+# ---------------------------------------------------------------------------
+
+#: Ceiling on cumulative spend across every live test run, in USD. Read from
+#: the llm_calls ledger before each live test, so a runaway loop stops rather
+#: than quietly spending. Approved for M3: $5.
+LIVE_TEST_BUDGET_USD = float(os.environ.get("M3_TEST_BUDGET_USD", "5.00"))
+
+LIVE_ENABLED = (
+    os.environ.get("LLM_PROVIDER", "").lower() == "openrouter"
+    and bool(os.environ.get("LLM_API_KEY", "").strip())
+    and not os.environ.get("LLM_API_KEY", "").startswith("__")
+)
+
+#: Cheap model used for the bulk of live assertions. Overridable so the suite
+#: is not pinned to one vendor's naming.
+LIVE_DEV_MODEL = os.environ.get("M3_DEV_MODEL", "anthropic/claude-haiku-5.5")
+#: A model from a different vendor, for cross-provider assertions.
+LIVE_ALT_MODEL = os.environ.get("M3_ALT_MODEL", "openai/gpt-6-luna")
+
+
+async def live_spend_so_far(database_url: str) -> float:
+    """Total estimated spend recorded against a live provider."""
+    from sqlalchemy import func, select
+
+    from app.db.models import LLMCall
+    from app.domain.enums import LLMProvider
+
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with AsyncSession(engine) as session:
+            total = await session.scalar(
+                select(func.coalesce(func.sum(LLMCall.cost_usd_estimate), 0)).where(
+                    LLMCall.provider == LLMProvider.OPENROUTER
+                )
+            )
+        return float(total or 0.0)
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+async def live_budget_guard(migrated_database: str) -> float:
+    """Refuse to start another live test once the approved cap is reached.
+
+    This is the mechanism that makes the budget real rather than an intention:
+    it reads what has actually been spent, not what was planned.
+    """
+    spent = await live_spend_so_far(migrated_database)
+    if spent >= LIVE_TEST_BUDGET_USD:
+        pytest.fail(
+            f"Live test budget exhausted: ${spent:.4f} spent of "
+            f"${LIVE_TEST_BUDGET_USD:.2f} approved. Raise M3_TEST_BUDGET_USD "
+            "only with the repository owner's approval."
+        )
+    return spent
+
+
+@pytest.fixture
+async def live_deps(migrated_database: str, live_budget_guard: float) -> AsyncIterator[NodeDeps]:
+    """Node dependencies wired to the real OpenRouter gateway.
+
+    Search stays on fixtures: M3 is the live *model* milestone, and live web
+    search belongs to M4.
+    """
+    from app.adapters.llm.registry import build_llm_runtime
+    from app.adapters.search.fixture import FixtureSearchProvider
+    from app.graph.deps import NodeDeps
+
+    settings = Settings(
+        _env_file=None,
+        app_env="test",
+        llm_provider="openrouter",
+        llm_api_key=os.environ["LLM_API_KEY"],
+        llm_base_url=os.environ.get("LLM_BASE_URL", "https://openrouter.ai/api/v1"),
+        llm_model_default=LIVE_DEV_MODEL,
+        search_provider="fixture",
+        database_url=migrated_database,
+    )
+    runtime = await build_llm_runtime(settings)
+    engine = create_async_engine(migrated_database, poolclass=NullPool)
+    try:
+        yield NodeDeps(
+            settings=settings,
+            session_factory=async_sessionmaker(engine, expire_on_commit=False),
+            llm=runtime.client,
+            search=FixtureSearchProvider(),
+        )
+    finally:
+        await runtime.client.aclose()
+        await engine.dispose()

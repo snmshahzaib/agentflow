@@ -17,6 +17,7 @@ from typing import Protocol, TypeVar
 from pydantic import BaseModel
 
 from app.domain.enums import AttemptOutcome, LLMProvider, OutputMode
+from app.domain.errors import ModelCapabilityError
 from app.domain.nodes import NodeName
 
 T = TypeVar("T", bound=BaseModel)
@@ -46,20 +47,31 @@ class ModelCapabilities:
         return self.completion_usd_per_token * 1_000_000
 
     def output_mode(self, *, require_structured_output: bool) -> OutputMode:
-        """Pick the strongest output tier this model supports.
+        """Pick the output tier for this model, refusing to downgrade quietly.
 
         Tier order is a security decision, not a preference: schema-constrained
         output is layer 3 of the prompt-injection boundary (docs/security.md).
+
+        Under ``require_structured_output`` **only native JSON-Schema is
+        acceptable**. Returning a weaker tier here would be exactly the silent
+        downgrade the setting exists to prevent -- the caller asked for a
+        guarantee, so an unmet guarantee has to be an error, not a quieter
+        promise.
         """
         if self.supports_structured_outputs:
             return OutputMode.JSON_SCHEMA
+
+        if require_structured_output:
+            raise ModelCapabilityError(
+                f"{self.model_id} does not support native structured outputs and "
+                "LLM_REQUIRE_STRUCTURED_OUTPUT is set. Choose a model that does, rather "
+                "than relaxing the requirement: schema-constrained output is part of the "
+                "prompt-injection boundary (docs/security.md).",
+                model=self.model_id,
+            )
+
         if self.supports_tools:
             return OutputMode.TOOL_CALL
-        if require_structured_output:
-            # Caller must decide; validation refuses this model up front.
-            raise ValueError(
-                f"{self.model_id} supports neither structured outputs nor tool calling"
-            )
         return OutputMode.PROMPT_JSON
 
 

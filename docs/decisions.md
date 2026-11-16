@@ -149,3 +149,44 @@ RQ forks per job.
 merits, but Redis is already wanted for single-flight task locks and rate limiting — and the
 transactional-outbox pattern is the centrepiece of a sibling portfolio project, where it tells a
 stronger story than it would as a second-order detail here.
+
+
+---
+
+## ADR-008 — Strict structured output refuses tier 2, rather than downgrading
+
+**Status:** accepted (2026-11-16)
+
+**Context.** `ModelCapabilities.output_mode` returned the strongest tier a
+model supported. With `LLM_REQUIRE_STRUCTURED_OUTPUT=true` and a model that
+offered tool calling but not native JSON-Schema, it quietly returned tier 2 —
+contradicting the documented contract that tier 1 is *the only tier permitted*
+in strict mode.
+
+**Decision.** In strict mode, anything below native JSON-Schema raises
+`ModelCapabilityError`. Outside strict mode a downgrade is allowed but is
+logged as `structured_output_tier_downgraded`, so it is never silent.
+
+**Why.** The caller asked for a guarantee. An unmet guarantee has to be an
+error, not a quieter promise — particularly here, where the guarantee is part
+of the prompt-injection boundary. Startup validation already refuses such a
+model, so this closes the gap for a client constructed directly.
+
+---
+
+## ADR-009 — Live model testing is budgeted against the ledger, not against intent
+
+**Status:** accepted (2026-11-16)
+
+**Decision.** Live provider tests are marked `live`, skipped unless
+`LLM_PROVIDER=openrouter` and a real key are set, and gated by a fixture that
+sums actual `cost_usd_estimate` from the `llm_calls` table and refuses to
+start once `M3_TEST_BUDGET_USD` is reached.
+
+**Why.** A budget that exists only as a number in a plan does not bound
+anything. Reading what was actually spent means a runaway retry loop or an
+accidental expensive model stops the suite instead of the bill.
+
+**Consequence.** The default test suite stays free, offline and
+deterministic; CI never needs a provider key. The cost of live assurance is
+opt-in and visible.

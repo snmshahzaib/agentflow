@@ -145,6 +145,15 @@ class OpenAICompatibleLLMClient:
         for chain_index, model_id in enumerate(chain):
             caps = self._catalogue.require(model_id)
             mode = caps.output_mode(require_structured_output=self._require_schema)
+            if mode is not OutputMode.JSON_SCHEMA:
+                # Reachable only with the requirement explicitly relaxed; never
+                # let it pass unremarked.
+                log.warning(
+                    "structured_output_tier_downgraded",
+                    node=node.value,
+                    model=model_id,
+                    tier=mode.value,
+                )
 
             for local_attempt in range(1, self._max_attempts + 1):
                 try:

@@ -86,7 +86,10 @@ ignore_missing_imports = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
-markers = ["integration: requires Postgres and Redis"]
+markers = [
+    "integration: requires Postgres and Redis",
+    "live: makes billable calls to a real LLM provider; skipped unless LLM_PROVIDER=openrouter and LLM_API_KEY are set",
+]
 
 [tool.coverage.run]
 source = ["app"]
