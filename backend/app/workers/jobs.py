@@ -19,6 +19,7 @@ from app.core.logging import get_logger
 from app.db.models import ResearchTask
 from app.domain.enums import TaskStatus
 from app.graph.builder import build_graph
+from app.services.task_service import purge_tasks_older_than
 from app.workers.locks import is_locked, single_flight
 
 log = get_logger(__name__)
@@ -161,6 +162,37 @@ async def resume_task(ctx: dict[str, Any], task_id: str, decision: dict[str, Any
         # status has to be settled here too.
         await _settle_status(ctx, graph, config, task_id)
         return "resumed"
+
+
+async def purge_expired_tasks(ctx: dict[str, Any]) -> int:
+    """Delete visitor research content past the retention window.
+
+    A public demo collects strangers' research questions, the pages retrieved
+    for them and the reports written from them. Keeping that indefinitely is a
+    privacy problem rather than an untidiness one, so it is deleted on a
+    schedule instead of accumulating until someone remembers.
+
+    Deliberately a hard delete: a soft delete would leave the questions and
+    retrieved excerpts in the table, which is the part that matters here.
+    Cascades remove steps, sources, reports, claims, evidence links,
+    approvals and ledger rows with the task.
+
+    Returns the number of tasks removed, so the log says what happened on a
+    quiet day as well as a busy one.
+    """
+    set_correlation_id(new_correlation_id())
+    settings = ctx["settings"]
+    factory = ctx["session_factory"]
+
+    async with factory() as session, session.begin():
+        removed = await purge_tasks_older_than(session, retention_days=settings.data_retention_days)
+
+    log.info(
+        "retention_sweep_completed",
+        removed=removed,
+        retention_days=settings.data_retention_days,
+    )
+    return removed
 
 
 async def recover_orphaned_tasks(ctx: dict[str, Any]) -> int:

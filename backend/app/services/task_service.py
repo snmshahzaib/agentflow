@@ -359,21 +359,24 @@ class TaskService:
         )
         return int(count or 0)
 
-    async def purge_expired(self, *, retention_days: int) -> int:
-        """Hard-delete tasks past the retention window.
 
-        Cascades remove steps, sources, reports, claims, evidence links,
-        approvals and ledger rows: leftover visitor research content is a
-        privacy problem, not just untidy data. Wired to a schedule in M4.
-        """
-        cutoff = datetime.now(UTC) - timedelta(days=retention_days)
-        rows = await self._session.scalars(
-            select(ResearchTask).where(ResearchTask.created_at < cutoff)
-        )
-        count = 0
-        for task in rows.all():
-            await self._session.delete(task)
-            count += 1
-        if count:
-            log.info("tasks_purged", count=count, retention_days=retention_days)
-        return count
+async def purge_tasks_older_than(session: AsyncSession, *, retention_days: int) -> int:
+    """Hard-delete tasks past the retention window.
+
+    Cascades remove steps, sources, reports, claims, evidence links,
+    approvals and ledger rows: leftover visitor research content is a privacy
+    problem, not just untidy data.
+
+    A plain function rather than a ``TaskService`` method because it needs
+    only a session. Requiring the service -- and therefore a queue -- to run a
+    sweep that enqueues nothing would make the worker construct a collaborator
+    it has no use for.
+    """
+    cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+    rows = await session.scalars(select(ResearchTask).where(ResearchTask.created_at < cutoff))
+    count = 0
+    for task in rows.all():
+        await session.delete(task)
+        count += 1
+    log.info("tasks_purged", count=count, retention_days=retention_days, cutoff=cutoff.isoformat())
+    return count
