@@ -103,7 +103,7 @@ class TestLiveWorkflow:
     """
 
     async def test_the_live_workflow_produces_a_grounded_report(
-        self, live_deps: NodeDeps, migrated_database: str
+        self, live_deps: NodeDeps, live_database: str
     ) -> None:
         from redis.asyncio import Redis
 
@@ -116,7 +116,7 @@ class TestLiveWorkflow:
                 live_deps,
                 task_id,
                 redis,
-                migrated_database.replace("postgresql+asyncpg://", "postgresql://", 1),
+                live_database.replace("postgresql+asyncpg://", "postgresql://", 1),
             )
         finally:
             await redis.aclose()
@@ -252,7 +252,7 @@ class TestUsageLedger:
 
 class TestReliability:
     async def test_an_unreachable_primary_falls_back_to_another_vendor(
-        self, live_deps: NodeDeps, migrated_database: str
+        self, live_deps: NodeDeps, live_database: str
     ) -> None:
         """The point of a gateway. The primary is a real model ID served by a
         deliberately broken base URL... so instead we force failure by

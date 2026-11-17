@@ -7,9 +7,10 @@ projected or aspirational; where coverage is missing, it says so.
 
 ```bash
 cd backend
-uv run pytest                        # all 283 tests
-uv run pytest -m "not integration"   # 175 tests, no Postgres or Redis needed
+uv run pytest                        # all 298 offline tests
+uv run pytest -m "not integration"   # 190 tests, no Postgres or Redis needed
 uv run pytest -m integration         # 108 tests, needs Postgres + Redis
+uv run pytest -m live                # billable; skipped unless a provider key is set
 uv run pytest --cov=app --cov-report=term
 uv run pytest tests/test_llm_registry.py::TestStubRuntime -q   # one class
 ```
@@ -31,9 +32,10 @@ scripts/restart-recovery-test.sh     # worker restart recovery, real Docker
 
 | Suite | Count | Result |
 |---|---|---|
-| Backend unit (`-m "not integration"`) | 175 | pass in 5.4 s |
-| Backend integration (Postgres + Redis) | 108 | pass in 23.7 s |
-| **Backend total** | **283** | **pass** |
+| Backend unit (`-m "not integration"`) | 190 | pass in 5.1 s |
+| Backend integration (Postgres + Redis) | 108 | pass in 22.3 s |
+| **Backend total (offline)** | **298** | **pass** |
+| Live provider (`-m live`) | 11 | see the acceptance ledger — partially blocked by free-tier quota |
 | Frontend (Vitest) | 17 | pass |
 | ESLint (`--max-warnings 0`) / `tsc -b` | — | clean |
 | Frontend production build | — | succeeds |
@@ -185,14 +187,61 @@ stranded in `running` with 879 s left on its lock, which is what motivated the
 lock heartbeat and the orphan sweep. After the fix, manufacturing that exact
 state produced an `orphaned_task_requeued` log line and the task completed.
 
+## Live provider tests
+
+`-m live` makes **billable** calls and is skipped unless `LLM_PROVIDER=openrouter`
+and a real key are set, so the default suite stays free, offline and
+deterministic and CI never needs a provider key.
+
+Three controls make running them safe:
+
+- **a spend guard** that sums actual `cost_usd_estimate` from the `llm_calls`
+  ledger before each test and refuses to start once `M3_TEST_BUDGET_USD` is
+  reached. A budget that exists only in a plan bounds nothing.
+- **`LLM_FREE_MODELS_ONLY`**, which refuses any model with non-zero published
+  pricing at startup and before every call, checking every pricing field — a
+  non-zero request fee makes a nominally free model billable.
+- **a dedicated `agentflow_live` database**, never the one integration tests
+  reset. Resetting the shared test database once already destroyed the record
+  of a successful live run that had cost real quota to produce.
+
+### Three outcomes, not two
+
+A live test reports `PASSED`, `FAILED`, or `SKIPPED`. The third is distinct
+and load-bearing: a test that cannot run because the day's free allowance is
+spent has not found a defect, and reporting it as a failure would bury real
+ones. A pytest hook converts a 429 whose body names a per-day allowance into a
+skip; a plain rate limit still fails, because handling those is the adapter's
+job.
+
+### Running in batches
+
+The free tier allows **50 requests per day** on a zero-credit account. Batches
+are sized against that:
+
+```bash
+scripts/live-acceptance-batch.sh 1   # workflow, ledger, provenance   ~4 calls
+scripts/live-acceptance-batch.sh 2   # injection, two vendors         ~8 calls
+scripts/live-acceptance-batch.sh 3   # fallback, budget, error paths  ~6 calls
+```
+
+Each batch prints remaining quota before running, distinguishes the three
+outcomes afterwards, and exports evidence to a committed file.
+`docs/milestones/m3-acceptance-ledger.md` records what is verified, what
+failed, what is blocked, and which acceptance criteria **cannot** be met under
+a free tier at all.
+
 ## Known gaps
 
 - **No browser-level end-to-end test yet.** Planned for M5 (one Playwright
   happy path), once there is a full UI to drive.
-- **The live provider path is untested against a real gateway.** Every
-  gateway test drives the real adapter logic against a fake transport. A
-  genuine OpenRouter call is M3, which is also where the red-team fixture is
-  run against two different vendors' models.
+- **The live provider path is only partially verified.** A full workflow has
+  run against a real free-tier model and strict structured output is confirmed
+  on three of them, but most live acceptance criteria are still blocked by the
+  50-requests-per-day quota. See the acceptance ledger.
+- **Nothing is verified against the shipped paid profile.** Live evidence so
+  far concerns free preview models, which are materially weaker. It is not
+  evidence about `anthropic/claude-sonnet-5`.
 - **Injection tests prove containment, not prevention.** Whether a model obeys
   an injected instruction is not measured here and is not claimed anywhere.
 - **The orphan sweep's timing is not tested end-to-end in CI.** Its logic is

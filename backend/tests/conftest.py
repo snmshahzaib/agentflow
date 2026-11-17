@@ -179,6 +179,14 @@ async def create_task_row(
 #: than quietly spending. Approved for M3: $5.
 LIVE_TEST_BUDGET_USD = float(os.environ.get("M3_TEST_BUDGET_USD", "5.00"))
 
+#: Live runs record into their own database, never the one integration tests
+#: truncate. Live evidence -- real tokens, latency, served models, costs -- is
+#: the product of a metered quota and must survive a routine test reset.
+LIVE_DATABASE_URL = os.environ.get(
+    "LIVE_DATABASE_URL",
+    "postgresql+asyncpg://agentflow:agentflow@localhost:5432/agentflow_live",
+)
+
 #: Captured at import, before the environment-isolation fixture strips it.
 #: That fixture keeps offline tests hermetic; live tests legitimately need the
 #: real credential, so it is read once here rather than at fixture time.
@@ -221,14 +229,34 @@ async def live_spend_so_far(database_url: str) -> float:
         await engine.dispose()
 
 
+@pytest.fixture(scope="session")
+def live_database() -> str:
+    """Apply migrations to the preserved live-evidence database.
+
+    Deliberately separate from ``migrated_database``: that one is reset
+    between runs, and resetting it once already destroyed the record of a
+    successful live workflow run that had cost real quota to produce.
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config("alembic.ini")
+    cfg.set_main_option(
+        "sqlalchemy.url",
+        LIVE_DATABASE_URL.replace("postgresql+asyncpg://", "postgresql+psycopg://", 1),
+    )
+    command.upgrade(cfg, "head")
+    return LIVE_DATABASE_URL
+
+
 @pytest.fixture
-async def live_budget_guard(migrated_database: str) -> float:
+async def live_budget_guard(live_database: str) -> float:
     """Refuse to start another live test once the approved cap is reached.
 
     This is the mechanism that makes the budget real rather than an intention:
     it reads what has actually been spent, not what was planned.
     """
-    spent = await live_spend_so_far(migrated_database)
+    spent = await live_spend_so_far(live_database)
     if spent >= LIVE_TEST_BUDGET_USD:
         pytest.fail(
             f"Live test budget exhausted: ${spent:.4f} spent of "
@@ -261,10 +289,10 @@ async def live_deps(migrated_database: str, live_budget_guard: float) -> AsyncIt
         # counter-productive.
         llm_max_attempts=2 if LIVE_FREE_ONLY else 3,
         search_provider="fixture",
-        database_url=migrated_database,
+        database_url=live_database,
     )
     runtime = await build_llm_runtime(settings)
-    engine = create_async_engine(migrated_database, poolclass=NullPool)
+    engine = create_async_engine(live_database, poolclass=NullPool)
     try:
         yield NodeDeps(
             settings=settings,

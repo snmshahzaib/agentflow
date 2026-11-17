@@ -64,7 +64,7 @@ ignore = ["S101"]
 "tests/*" = ["S105", "S106"]
 # Operator CLIs: printing is their output, and blocking IO at the end of a
 # one-shot script is not worth an async file API.
-"scripts/*" = ["T201", "ASYNC230"]
+"scripts/*" = ["T201", "ASYNC230", "ASYNC240"]
 "migrations/*" = ["E501", "I001"]
 "app/adapters/llm/pricing.py" = ["S110"]
 
