@@ -14,6 +14,8 @@ from sqlalchemy import select
 from app.adapters.search.base import SearchResult
 from app.core.logging import get_logger
 from app.db.models import Source
+from app.domain.enums import SearchMode
+from app.domain.errors import AdapterError, SearchUnavailableError
 from app.domain.nodes import NodeName
 from app.graph.deps import NodeDeps
 from app.graph.runtime import record_step
@@ -28,13 +30,51 @@ async def research_node(state: GraphState, deps: NodeDeps) -> GraphState:
     queries = state.get("search_queries") or [state["question"]]
     per_subtask = deps.settings.search_max_results_per_subtask
 
+    # A free search allowance is a shared, exhaustible resource. Capping
+    # searches per task means a runaway plan costs one task rather than the
+    # month's quota.
+    budget = deps.settings.search_max_per_task
+    if len(queries) > budget:
+        log.warning(
+            "search_queries_truncated",
+            requested=len(queries),
+            budget=budget,
+            task_id=task_id,
+        )
+        queries = queries[:budget]
+
     async with record_step(deps, task_id=task_id, node=NodeName.RESEARCH) as step:
-        step.input_summary = f"{len(queries)} queries, up to {per_subtask} results each"
+        step.input_summary = (
+            f"{len(queries)} queries via {deps.search.mode.value}, up to {per_subtask} results each"
+        )
 
         retrieved: list[tuple[int, SearchResult]] = []
+        failures: list[dict[str, str]] = []
+
         for index, query in enumerate(queries):
-            results = await deps.search.search(query, max_results=per_subtask)
+            try:
+                results = await deps.search.search(query, max_results=per_subtask)
+            except AdapterError as exc:
+                # One subtask failing is partial research, not a dead task:
+                # the remaining subtasks may still produce usable evidence,
+                # and the failure is recorded so the report can disclose it.
+                failures.append({"subtask": str(index), "code": exc.code})
+                log.warning(
+                    "search_subtask_failed",
+                    subtask_index=index,
+                    code=exc.code,
+                    task_id=task_id,
+                )
+                continue
             retrieved.extend((index, result) for result in results)
+
+        # Every subtask failing is a different matter: there is no evidence,
+        # so drafting would produce a report grounded in nothing.
+        if failures and not retrieved:
+            raise SearchUnavailableError(
+                f"Retrieval failed for all {len(queries)} subtask(s); no evidence was gathered.",
+                failures=len(failures),
+            )
 
         stored_ids = await _persist_sources(deps, task_uuid, retrieved)
 
@@ -45,10 +85,16 @@ async def research_node(state: GraphState, deps: NodeDeps) -> GraphState:
             "provider": deps.search.mode.value,
             # Stated explicitly so a reader of the timeline never has to infer
             # whether this came from the live web.
-            "is_fixture": deps.search.mode.value == "fixture",
+            "is_fixture": deps.search.mode is SearchMode.FIXTURE,
+            "subtasks_failed": len(failures),
+            "failures": failures or None,
+            "partial": bool(failures),
         }
 
-    return {"source_ids": [str(sid) for sid in stored_ids]}
+    return {
+        "source_ids": [str(sid) for sid in stored_ids],
+        "search_failures": len(failures),
+    }
 
 
 async def _persist_sources(
@@ -83,6 +129,8 @@ async def _persist_sources(
                 provider=result.provider,
                 rank=result.rank,
                 is_fixture=result.is_fixture,
+                score=result.score,
+                published_date=result.published_date,
             )
             session.add(source)
             await session.flush()

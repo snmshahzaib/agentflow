@@ -75,6 +75,17 @@ class ApprovalRequiredError(ConflictError):
     message = "This report has not been approved and cannot be exported."
 
 
+class SearchUnavailableError(AgentFlowError):
+    """Retrieval produced nothing, so there is no evidence to reason over.
+
+    Distinct from an empty result set: that means the provider answered and
+    found nothing, which is a finding. This means retrieval itself failed.
+    """
+
+    code = "search_unavailable"
+    message = "Retrieval failed and no evidence was gathered."
+
+
 class UnsafeUrlError(ValidationError):
     code = "unsafe_url"
     message = "The URL was rejected by the safety validator."

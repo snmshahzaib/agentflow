@@ -47,6 +47,9 @@ class GraphState(TypedDict, total=False):
     #: Identifiers of sources persisted by the research node, in label order:
     #: index 0 is the source the model sees as ``S1``.
     source_ids: list[str]
+    #: Subtasks whose retrieval failed. Non-zero means the research is
+    #: partial, which the report discloses rather than hiding.
+    search_failures: int
 
     #: Working data passed between nodes. Kept here rather than re-read from
     #: the database so a resume after a node does not redo its work; small

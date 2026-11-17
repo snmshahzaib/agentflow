@@ -18,6 +18,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -231,6 +232,12 @@ class Source(Base):
     #: True when this came from committed fixtures. Surfaced in the UI; a
     #: fixture is never presented as a live retrieval.
     is_fixture: Mapped[bool] = mapped_column(nullable=False, default=False)
+    #: Provider relevance score, where the provider supplies one.
+    score: Mapped[float | None] = mapped_column(Float)
+    #: Publication date exactly as the provider reported it. Stored as text
+    #: because providers disagree on format, and a wrong parse would be worse
+    #: than no date -- a misdated source misleads a reader about recency.
+    published_date: Mapped[str | None] = mapped_column(String(64))
 
     retrieved_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

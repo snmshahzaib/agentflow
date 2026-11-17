@@ -36,8 +36,30 @@ LIVE_MODEL_FIXTURE_SOURCES_NOTICE = (
 #: Shown when a stub produced the text over genuinely retrieved sources.
 STUB_MODEL_LIVE_SOURCES_NOTICE = (
     "> **Fixture text over real sources — not AI research.**\n"
-    "> Sources below were genuinely retrieved, but the prose was produced by a\n"
-    "> deterministic stub adapter rather than a language model."
+    "> Sources below were genuinely retrieved from the public web, but the\n"
+    "> prose was produced by a deterministic stub adapter rather than a\n"
+    "> language model."
+)
+
+#: Shown when evidence is part live, part fixture. Reachable when retrieval
+#: fails for some subtasks, or when a task spans a configuration change.
+MIXED_SOURCES_NOTICE = (
+    "> **Mixed evidence — part live web, part fixture.**\n"
+    "> Some sources below were retrieved from the public web and some come\n"
+    "> from a committed corpus of synthetic documents. Each source is marked\n"
+    "> individually in the source list. Treat any claim resting on a fixture\n"
+    "> source as a demonstration, not as research."
+)
+
+#: Shown for a genuinely live run. There is nothing to disclaim about
+#: provenance, but there is something to disclaim about reliability: a page
+#: being retrievable says nothing about whether it is correct.
+LIVE_RESEARCH_NOTICE = (
+    "> **Live web research — retrieved, not verified.**\n"
+    "> Sources below were retrieved from the public web and a language model\n"
+    "> produced the analysis. AgentFlow does not assess whether a retrieved\n"
+    "> page is accurate, current, or authoritative; it checks only whether a\n"
+    "> claim is supported by something a source actually says."
 )
 
 _SUPPORT_LABEL = {
@@ -76,6 +98,14 @@ class ReportProvenance:
     calls_used: int
     version: int
     revision_count: int
+    #: Counted from the sources actually stored, not from configuration. A
+    #: task can legitimately hold both: retrieval may fail for one subtask
+    #: and succeed for another, and describing such a report by its
+    #: configured mode alone would be inaccurate.
+    live_source_count: int = 0
+    fixture_source_count: int = 0
+    #: Subtasks whose retrieval failed, making the research partial.
+    search_failures: int = 0
 
 
 def render_report(
@@ -90,9 +120,7 @@ def render_report(
     """Render the full Markdown report."""
     parts: list[str] = [f"# {title}", ""]
 
-    notice = provenance_notice(provenance)
-    if notice is not None:
-        parts += [notice, ""]
+    parts += [provenance_notice(provenance), ""]
 
     parts += ["## Summary", "", summary.strip(), ""]
 
@@ -106,24 +134,38 @@ def render_report(
     return "\n".join(parts).rstrip() + "\n"
 
 
-def provenance_notice(provenance: ReportProvenance) -> str | None:
+def provenance_notice(provenance: ReportProvenance) -> str:
     """The banner that matches what actually produced this report.
 
-    Four combinations, three notices, one silence. The distinction matters:
-    a live model reasoning over fixture sources must not be described as
-    "no language model was called", and fixture sources must not pass as
-    research whoever wrote the prose.
+    Derived from the **sources stored**, not from the configured search mode.
+    A task whose retrieval partly failed holds both live and fixture
+    evidence, and describing it by its configuration would be inaccurate —
+    the same class of error as claiming no model was called when one wrote
+    the report.
+
+    Every combination gets a notice, including a fully live run: there is
+    nothing to disclaim about its provenance, but a page being retrievable
+    says nothing about whether it is correct.
     """
     stub_model = provenance.llm_provider is LLMProvider.STUB
-    fixture_sources = provenance.search_mode is SearchMode.FIXTURE
+    has_live = provenance.live_source_count > 0
+    has_fixture = provenance.fixture_source_count > 0
 
-    if stub_model and fixture_sources:
+    # No sources at all: fall back to the configured mode, since there is no
+    # evidence to describe.
+    if not has_live and not has_fixture:
+        has_fixture = provenance.search_mode is SearchMode.FIXTURE
+        has_live = not has_fixture
+
+    if has_live and has_fixture:
+        return MIXED_SOURCES_NOTICE
+    if stub_model and has_fixture:
         return FULLY_OFFLINE_NOTICE
-    if fixture_sources:
+    if has_fixture:
         return LIVE_MODEL_FIXTURE_SOURCES_NOTICE
     if stub_model:
         return STUB_MODEL_LIVE_SOURCES_NOTICE
-    return None
+    return LIVE_RESEARCH_NOTICE
 
 
 def _render_claim_support(claims: list[RenderedClaim]) -> list[str]:
@@ -174,15 +216,29 @@ def _render_limitations(claims: list[RenderedClaim], provenance: ReportProvenanc
         served = ", ".join(provenance.models_served) or "unknown"
         lines.append(f"- Written by model(s): `{served}`.")
 
-    if provenance.search_mode is SearchMode.FIXTURE:
+    if provenance.fixture_source_count and provenance.live_source_count:
+        lines.append(
+            f"- Evidence is **mixed**: {provenance.live_source_count} source(s) retrieved "
+            f"from the web and {provenance.fixture_source_count} from the committed "
+            "fixture corpus. Each is marked individually in the source list."
+        )
+    elif provenance.fixture_source_count or provenance.search_mode is SearchMode.FIXTURE:
         lines.append(
             "- Sources come from a **committed fixture corpus**, not live web search. "
             "They are synthetic documents written for this demonstration."
         )
     else:
         lines.append(
-            f"- Sources retrieved via `{provenance.search_mode.value}`; AgentFlow did not "
-            "fetch the pages itself and relies on provider-supplied excerpts."
+            f"- Sources retrieved via `{provenance.search_mode.value}`. AgentFlow did not "
+            "fetch the pages itself; it relies on provider-supplied excerpts, and does "
+            "**not** assess whether a page is accurate, current or authoritative."
+        )
+
+    if provenance.search_failures:
+        lines.append(
+            f"- **Retrieval failed for {provenance.search_failures} subtask(s).** This "
+            "report is based on partial research, and whatever those subtasks would "
+            "have covered is missing."
         )
 
     lines.append(

@@ -32,10 +32,12 @@ from app.domain.enums import (
     StepStatus,
     SupportStatus,
 )
+from app.domain.errors import ProviderUnavailableError, SearchUnavailableError
 from app.domain.nodes import LLM_NODES, NODE_ORDER, NodeName
 from app.graph.builder import build_graph
 from app.graph.deps import NodeDeps
-from tests.conftest import create_task_row
+from app.graph.report import ReportProvenance, provenance_notice
+from tests.conftest import create_task_row, make_settings
 
 pytestmark = pytest.mark.integration
 
@@ -311,79 +313,263 @@ class TestApprovalAndRevision:
         assert state.next, "a revised report must wait for approval too"
 
 
+def _provenance(**overrides: object) -> ReportProvenance:
+    base: dict[str, object] = {
+        "search_mode": SearchMode.FIXTURE,
+        "llm_provider": LLMProvider.STUB,
+        "models_served": ("vendor/model",),
+        "source_count": 8,
+        "subtask_count": 3,
+        "tokens_used": 1000,
+        "calls_used": 4,
+        "version": 1,
+        "revision_count": 0,
+        "live_source_count": 0,
+        "fixture_source_count": 0,
+        "search_failures": 0,
+    }
+    base.update(overrides)
+    return ReportProvenance(**base)  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize(
-    ("llm_provider", "search_mode", "must_contain", "must_not_contain"),
+    ("overrides", "must_contain", "must_not_contain"),
     [
+        # Fully offline: a stub wrote it over synthetic sources.
         (
-            LLMProvider.STUB,
-            SearchMode.FIXTURE,
+            {"fixture_source_count": 8},
             "No language model was called",
             "Real model output",
         ),
+        # A real model reasoning over fixture sources must not be described
+        # as "no language model was called" -- the M3 defect.
         (
-            LLMProvider.OPENROUTER,
-            SearchMode.FIXTURE,
+            {"llm_provider": LLMProvider.OPENROUTER, "fixture_source_count": 8},
             "Real model output over fixture sources",
             "No language model was called",
         ),
+        # Stub prose over genuinely retrieved pages.
         (
-            LLMProvider.STUB,
-            SearchMode.TAVILY,
+            {"search_mode": SearchMode.TAVILY, "live_source_count": 8},
             "Fixture text over real sources",
             "No language model was called",
+        ),
+        # Part live, part fixture: describing this by configuration alone
+        # would be inaccurate whichever mode was configured.
+        (
+            {
+                "llm_provider": LLMProvider.OPENROUTER,
+                "search_mode": SearchMode.TAVILY,
+                "live_source_count": 5,
+                "fixture_source_count": 3,
+            },
+            "Mixed evidence",
+            "No language model was called",
+        ),
+        # Fully live: nothing to disclaim about provenance, everything to
+        # disclaim about reliability.
+        (
+            {
+                "llm_provider": LLMProvider.OPENROUTER,
+                "search_mode": SearchMode.TAVILY,
+                "live_source_count": 8,
+            },
+            "retrieved, not verified",
+            "fixture",
         ),
     ],
 )
 def test_the_provenance_notice_matches_what_actually_ran(
-    llm_provider: LLMProvider,
-    search_mode: SearchMode,
-    must_contain: str,
-    must_not_contain: str,
+    overrides: dict[str, object], must_contain: str, must_not_contain: str
 ) -> None:
     """Regression test for a false provenance claim.
 
     The notice originally fired when the provider was a stub *or* search was
-    fixtures, so a live model reasoning over fixture sources produced a report
-    stating "No language model was called" — while its own limitations section
-    named the model that wrote it. A live run surfaced it.
+    fixtures, so a live model over fixture sources produced a report stating
+    "No language model was called" while its own limitations named the model
+    that wrote it. It is now derived from the sources actually stored.
     """
-    from app.graph.report import ReportProvenance, provenance_notice
-
-    notice = provenance_notice(
-        ReportProvenance(
-            search_mode=search_mode,
-            llm_provider=llm_provider,
-            models_served=("vendor/model",),
-            source_count=8,
-            subtask_count=3,
-            tokens_used=1000,
-            calls_used=4,
-            version=1,
-            revision_count=0,
-        )
-    )
-    assert notice is not None
+    notice = provenance_notice(_provenance(**overrides))
     assert must_contain in notice
-    assert must_not_contain not in notice
+    assert must_not_contain.lower() not in notice.lower()
 
 
-def test_a_fully_live_report_carries_no_provenance_notice() -> None:
-    """With a real model over real sources there is nothing to disclaim."""
-    from app.graph.report import ReportProvenance, provenance_notice
-
-    assert (
-        provenance_notice(
-            ReportProvenance(
-                search_mode=SearchMode.TAVILY,
-                llm_provider=LLMProvider.OPENROUTER,
-                models_served=("vendor/model",),
-                source_count=8,
-                subtask_count=3,
-                tokens_used=1000,
-                calls_used=4,
-                version=1,
-                revision_count=0,
-            )
+def test_a_fully_live_report_still_disclaims_reliability() -> None:
+    """A page being retrievable says nothing about whether it is correct, so
+    even a fully live run carries a notice."""
+    notice = provenance_notice(
+        _provenance(
+            llm_provider=LLMProvider.OPENROUTER,
+            search_mode=SearchMode.TAVILY,
+            live_source_count=8,
         )
-        is None
     )
+    assert "retrieved, not verified" in notice
+    assert "does not assess" in notice.lower() or "not assess" in notice.lower()
+
+
+def test_a_notice_is_always_produced() -> None:
+    """Returning None for any combination would leave a report with no
+    provenance statement at all."""
+    for overrides in (
+        {},
+        {"live_source_count": 1},
+        {"fixture_source_count": 1},
+        {"live_source_count": 1, "fixture_source_count": 1},
+        {"llm_provider": LLMProvider.OPENROUTER},
+    ):
+        assert provenance_notice(_provenance(**overrides)).startswith(">")
+
+
+# ---------------------------------------------------------------------------
+# Partial research: retrieval failing for some subtasks but not all
+# ---------------------------------------------------------------------------
+
+
+class FlakySearchProvider:
+    """Fails for chosen query indices, succeeds for the rest."""
+
+    def __init__(self, inner: Any, fail_indices: set[int]) -> None:
+        self._inner = inner
+        self._fail = fail_indices
+        self._calls = 0
+
+    @property
+    def mode(self) -> SearchMode:
+        return self._inner.mode
+
+    async def search(self, query: str, *, max_results: int) -> Any:
+        index = self._calls
+        self._calls += 1
+        if index in self._fail:
+            raise ProviderUnavailableError("search provider is down")
+        return await self._inner.search(query, max_results=max_results)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+@pytest.mark.integration
+class TestPartialResearch:
+    async def test_one_failed_subtask_still_produces_a_report(self, node_deps: NodeDeps) -> None:
+        """Partial research is a result, not a dead task: the remaining
+        subtasks may still carry usable evidence."""
+        deps = NodeDeps(
+            settings=node_deps.settings,
+            session_factory=node_deps.session_factory,
+            llm=node_deps.llm,
+            search=FlakySearchProvider(node_deps.search, {0}),
+        )
+        task_id = await create_task_row(deps)
+        await run_to_gate(deps, task_id, InMemorySaver())
+
+        async with deps.session_factory() as session:
+            report = await session.scalar(
+                select(Report).where(Report.task_id == uuid.UUID(task_id))
+            )
+            step = await session.scalar(
+                select(WorkflowStep).where(
+                    WorkflowStep.task_id == uuid.UUID(task_id),
+                    WorkflowStep.node == NodeName.RESEARCH,
+                )
+            )
+
+        assert report is not None
+        assert step is not None
+        assert step.output_json is not None
+        assert step.output_json["partial"] is True
+        assert step.output_json["subtasks_failed"] == 1
+
+    async def test_the_report_discloses_that_research_was_partial(
+        self, node_deps: NodeDeps
+    ) -> None:
+        """A reader must not have to infer that evidence is missing."""
+        deps = NodeDeps(
+            settings=node_deps.settings,
+            session_factory=node_deps.session_factory,
+            llm=node_deps.llm,
+            search=FlakySearchProvider(node_deps.search, {0}),
+        )
+        task_id = await create_task_row(deps)
+        await run_to_gate(deps, task_id, InMemorySaver())
+
+        async with deps.session_factory() as session:
+            report = await session.scalar(
+                select(Report).where(Report.task_id == uuid.UUID(task_id))
+            )
+        assert report is not None
+        assert "Retrieval failed for 1 subtask" in report.content_markdown
+        assert "partial research" in report.content_markdown
+
+    async def test_every_subtask_failing_aborts_rather_than_drafting(
+        self, node_deps: NodeDeps
+    ) -> None:
+        """With no evidence at all, drafting would produce a report grounded
+        in nothing."""
+        deps = NodeDeps(
+            settings=node_deps.settings,
+            session_factory=node_deps.session_factory,
+            llm=node_deps.llm,
+            search=FlakySearchProvider(node_deps.search, {0, 1, 2, 3, 4, 5, 6, 7}),
+        )
+        task_id = await create_task_row(deps)
+
+        with pytest.raises(SearchUnavailableError):
+            await run_to_gate(deps, task_id, InMemorySaver())
+
+        async with deps.session_factory() as session:
+            report = await session.scalar(
+                select(Report).where(Report.task_id == uuid.UUID(task_id))
+            )
+            step = await session.scalar(
+                select(WorkflowStep).where(
+                    WorkflowStep.task_id == uuid.UUID(task_id),
+                    WorkflowStep.node == NodeName.RESEARCH,
+                )
+            )
+        assert report is None, "no report may be written without evidence"
+        assert step is not None
+        assert step.status is StepStatus.FAILED
+
+    async def test_the_per_task_search_budget_truncates_the_plan(self, node_deps: NodeDeps) -> None:
+        """A free allowance is shared and exhaustible: a runaway plan should
+        cost one task, not the month."""
+        from app.graph.nodes.research import research_node
+
+        deps = NodeDeps(
+            settings=make_settings(search_max_per_task=2),
+            session_factory=node_deps.session_factory,
+            llm=node_deps.llm,
+            search=node_deps.search,
+        )
+        task_id = await create_task_row(deps)
+        delta = await research_node(
+            {
+                "task_id": task_id,
+                "question": QUESTION,
+                # Real queries: the fixture tokeniser discards tokens
+                # shorter than three characters, so single letters retrieve
+                # nothing and would test the wrong thing.
+                "search_queries": [
+                    "airflow operational burden",
+                    "prefect developer experience",
+                    "dagster assets testing",
+                    "licensing open core",
+                    "comparison throughput benchmarks",
+                ],
+                "subtasks": ["one", "two", "three", "four", "five"],
+            },
+            deps,
+        )
+        assert delta["source_ids"]
+
+        async with deps.session_factory() as session:
+            step = await session.scalar(
+                select(WorkflowStep).where(
+                    WorkflowStep.task_id == uuid.UUID(task_id),
+                    WorkflowStep.node == NodeName.RESEARCH,
+                )
+            )
+        assert step is not None
+        assert step.output_json is not None
+        assert len(step.output_json["queries"]) == 2

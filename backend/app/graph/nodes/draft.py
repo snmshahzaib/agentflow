@@ -166,6 +166,11 @@ async def _render(
         calls_used=task.calls_used if task else 0,
         version=version,
         revision_count=revision_round,
+        # Counted from the rows actually stored, so a partly-failed retrieval
+        # is described as the mixture it is rather than by configuration.
+        live_source_count=sum(1 for row in source_rows if not row.is_fixture),
+        fixture_source_count=sum(1 for row in source_rows if row.is_fixture),
+        search_failures=int(state.get("search_failures", 0)),
     )
 
     return render_report(

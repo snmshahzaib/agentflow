@@ -93,6 +93,17 @@ class Settings(BaseSettings):
     search_api_key: SecretStr | None = None
     search_max_results_per_subtask: Annotated[int, Field(ge=1, le=20)] = 5
     search_timeout_seconds: Annotated[float, Field(gt=0, le=120)] = 20.0
+    search_base_url: str = "https://api.tavily.com"
+    search_max_attempts: Annotated[int, Field(ge=1, le=10)] = 3
+    #: "basic" costs 1 API credit against the free monthly allowance,
+    #: "advanced" costs 2. Nothing in this workflow needs advanced retrieval.
+    search_depth: Literal["basic", "advanced"] = "basic"
+    #: Ceiling on live searches per task, mirroring LLM_MAX_CALLS_PER_TASK. A
+    #: free allowance is a shared, exhaustible resource; a runaway plan should
+    #: cost one task rather than the month.
+    search_max_per_task: Annotated[int, Field(ge=1, le=50)] = 8
+    #: Comma-separated domains never to retrieve from.
+    search_exclude_domains: str = ""
 
     # --- orchestration --------------------------------------------------
     max_subtasks: Annotated[int, Field(ge=1, le=8)] = 4
@@ -200,6 +211,11 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.cors_allow_origins.split(",") if o.strip()]
+
+    @property
+    def excluded_search_domains(self) -> list[str]:
+        """Domains never to retrieve from."""
+        return [d.strip().lower() for d in self.search_exclude_domains.split(",") if d.strip()]
 
     @property
     def fallback_models(self) -> list[str]:
