@@ -1,23 +1,32 @@
 # Testing
 
-Every number on this page came from a run on 2026-11-16. Nothing here is
+Every number on this page came from a run on 2026-11-17. Nothing here is
 projected or aspirational; where coverage is missing, it says so.
 
 ## Commands
 
 ```bash
 cd backend
-uv run pytest                        # all 298 offline tests
-uv run pytest -m "not integration"   # 190 tests, no Postgres or Redis needed
-uv run pytest -m integration         # 108 tests, needs Postgres + Redis
-uv run pytest -m live                # billable; skipped unless a provider key is set
+uv run pytest                        # all 408 offline tests (20 live ones skip)
+uv run pytest -m "not integration"   # 274 tests, no Postgres or Redis needed
+uv run pytest -m integration         # 134 tests, needs Postgres + Redis
 uv run pytest --cov=app --cov-report=term
 uv run pytest tests/test_llm_registry.py::TestStubRuntime -q   # one class
 ```
 
+Live tests spend a metered allowance and are selected explicitly. The markers
+separate the two allowances, which matters because they are exhausted at very
+different rates:
+
+```bash
+uv run pytest -m live                             # model calls (OpenRouter)
+uv run pytest -m "live_search and not live_models" # search credits only, no model calls
+uv run pytest -m live_models                      # BOTH allowances; 8 model calls
+```
+
 ```bash
 cd frontend
-pnpm test            # 10 Vitest tests
+pnpm test            # 17 Vitest tests
 pnpm lint            # ESLint, --max-warnings 0
 pnpm typecheck       # tsc -b
 ```
@@ -28,28 +37,32 @@ scripts/smoke-test.sh                # end-to-end against a running stack
 scripts/restart-recovery-test.sh     # worker restart recovery, real Docker
 ```
 
-## Results (measured 2026-11-16)
+## Results (measured 2026-11-17)
 
 | Suite | Count | Result |
 |---|---|---|
-| Backend unit (`-m "not integration"`) | 190 | pass in 5.1 s |
-| Backend integration (Postgres + Redis) | 108 | pass in 22.3 s |
-| **Backend total (offline)** | **298** | **pass** |
-| Live provider (`-m live`) | 10 | **all pass** against the free profile, $0.00 spend |
+| Backend unit (`-m "not integration"`) | 274 | pass in 7.6 s |
+| Backend integration (Postgres + Redis) | 134 | pass in 35.9 s |
+| **Backend total (offline)** | **408** | **pass** (20 live tests skipped) |
+| Live models (`-m live`, free profile) | 10 | **all pass**, $0.00 spend |
+| Live search (`-m "live_search and not live_models"`) | 9 | **all pass** |
+| Live full lifecycle (`-m live_models`) | 1 | **pass** — 8 model calls, 8 searches |
 | Frontend (Vitest) | 17 | pass |
 | ESLint (`--max-warnings 0`) / `tsc -b` | — | clean |
 | Frontend production build | — | succeeds |
 | ruff check + format | — | clean |
-| mypy (64 source files) | — | clean |
+| mypy (69 source files) | — | clean |
 | import-linter | 4 contracts | all kept |
 | gitleaks (history + staged) | — | no leaks |
-| pip-audit | 69 packages | no known vulnerabilities |
+| pip-audit | 90 packages | no known vulnerabilities |
+| pnpm audit | — | one known-unfixable advisory (picomatch); any other fails CI |
 | `scripts/smoke-test.sh` | — | passes |
 | `scripts/restart-recovery-test.sh` | — | passes against Docker |
 
-Backend line coverage: **90%** (2,314 statements, 236 uncovered), up from 84%
-at M1. `app/workers/jobs.py` went from 0% to 88% and `app/workers/locks.py`
-to 100%.
+Backend line coverage: **90%** (2,699 statements, 257 uncovered).
+
+An earlier commit message (`c09ac85`) claimed "386 tests (273 unit, 113
+integration)". That was wrong; the figures above are measured.
 
 ## What the tests actually assert
 
@@ -111,20 +124,48 @@ version instead of duplicating it; a failing node records a failed step; and
 the orphan sweep re-queues a stalled unlocked task while leaving alone one a
 live worker holds, one updated recently, and one awaiting approval.
 
-**Locking** (`test_worker_locks.py`) — contention, release on exception,
-refusing to release a lock no longer owned, the TTL, and the heartbeat that
-keeps a long task's lock alive and stops when another worker takes over.
-
 **Locking** (`test_worker_locks.py`) — a second holder is refused while the
 first holds the lock; the lock is released even when the body raises, so a
-crashing job cannot leave a task permanently locked; a holder cannot release
-a lock it no longer owns; and the TTL is set so a crashed worker frees it.
+crashing job cannot leave a task permanently locked; a holder cannot release a
+lock it no longer owns; the TTL is set so a crashed worker frees it; and the
+heartbeat keeps a long task's lock alive and stops when another worker takes
+over.
 
 **API** (`test_api.py`) — 202 with a `Location` header on submission;
 idempotency; validation errors in the standard envelope; session scoping
 (another session gets 404, not 403); the timeline exposing failed attempts;
 approval only from `awaiting_approval`, with 409 otherwise; and correlation-id
 echo including sanitising an over-long inbound header.
+
+**URL handling** (`test_search_urls.py`) — canonicalisation collapsing
+tracking parameters, fragments, default ports, host case and trailing slashes
+onto one digest, so the same page is never stored as two sources; and
+rejection of unsafe schemes, embedded credentials, loopback, private,
+link-local and cloud-metadata hosts, bare hostnames and over-long URLs.
+Validation rejects and never repairs, which is asserted rather than assumed.
+
+**The search provider** (`test_search_tavily.py`) — request shape at the
+configured depth; malformed and unsafe entries dropped with a log rather than
+stored; deduplication within one response; `Retry-After` honoured up to a cap;
+HTTP status mapped onto the domain error taxonomy, with a 400 treated as
+terminal and a 429 as retryable.
+
+**Rate limiting** (`test_rate_limit.py`, and `TestRateLimiting` in
+`test_api.py`) — requests allowed up to the limit then refused; a refusal
+naming when to come back, never zero seconds; callers counted separately;
+the counter expiring with its window so there is no state to sweep; an
+unreachable Redis **failing open**; and at the API edge, a 429 carrying
+`Retry-After` and the standard envelope, a refused submission writing no task
+row, each endpoint having its own allowance, and read endpoints being
+unlimited.
+
+**Retention** (`test_retention.py`) — a task past the window deleted along
+with its steps, sources, reports and claims, because a deletion that leaves
+the retrieved excerpts behind has not deleted the part that matters; a task
+inside the window untouched; the boundary tested on both sides; a sweep with
+nothing to do being harmless; and that the job is actually **registered and
+scheduled**, with `run_at_startup=False` so a restart loop cannot purge
+repeatedly.
 
 **Injection containment** (`test_injection.py`) — see `docs/security.md` for
 what these do and do not establish. They confirm the red-team document is
@@ -231,6 +272,40 @@ outcomes afterwards, and exports evidence to a committed file.
 failed, what is blocked, and which acceptance criteria **cannot** be met under
 a free tier at all.
 
+## Live search tests
+
+`-m live_search` consumes **Tavily credits** and is skipped unless
+`SEARCH_PROVIDER=tavily` and a real key are set. Two batches exist because the
+two allowances are exhausted at very different rates:
+
+```bash
+scripts/m4-live-batch.sh search      # ~20 search requests, ZERO model requests
+scripts/m4-live-batch.sh lifecycle   # 8 search requests + 8 model requests
+```
+
+The split is load-bearing, not tidiness. Everything that can be proven without
+a model call — real retrieval, canonical URLs, deduplication, provider
+metadata, empty results, request shape, the per-task cap — runs through a
+fixture that pairs **live search with the deterministic stub model**, so it
+costs nothing from the scarcer allowance.
+
+The `search` batch selects `-m "live_search and not live_models"`, and the
+exclusion matters: the test module's `pytestmark` applies `live_search` to
+every class in it, so a bare `-m live_search` also selects the full lifecycle
+test. That is not hypothetical — it happened, with four model requests
+remaining, and consumed seven of them before aborting. The marker and the
+script both record why.
+
+Credit accounting is asserted with an `httpx.MockTransport` rather than
+against the provider's usage endpoint. That endpoint is itself rate-limited to
+roughly 10 requests per 10 minutes, and it reported `0 of 1000 credits used`
+after roughly 60 real searches, so it cannot settle what a run cost. The test
+asserts what we control instead — one request per query, at the configured
+depth, without raw content — at zero cost. See ADR-016.
+
+`docs/milestones/m4-acceptance-ledger.md` records which criteria are verified,
+by which batch, and what could not be verified at all.
+
 ## Known gaps
 
 - **No browser-level end-to-end test yet.** Planned for M5 (one Playwright
@@ -248,3 +323,15 @@ a free tier at all.
   covered by four unit tests; the cron firing was verified by hand in Docker.
 - **No performance or load measurements exist.** None are claimed anywhere in
   this repository.
+- **Tavily credit consumption is not verifiable.** The provider's usage
+  endpoint does not reflect our requests, so the ledger reports AgentFlow's
+  own request count and says so.
+- **Rate-limit and `Retry-After` handling against Tavily is covered only with
+  mocked responses.** The live allowance was never exhausted, so that path is
+  unexercised against the real provider.
+- **Total retrieval failure is covered offline only.** Provoking it live would
+  mean revoking the key mid-run.
+- **Three demo-safety settings are declared but not enforced**
+  (`DEMO_DAILY_BUDGET_USD`, `DEMO_MAX_TASKS_PER_SESSION`, `DEMO_ACCESS_CODE`).
+  They are listed as unimplemented in `docs/security.md` and must be wired up
+  or removed before any public deployment.

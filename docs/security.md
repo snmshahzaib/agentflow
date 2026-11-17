@@ -49,23 +49,51 @@ content, which eliminates the SSRF surface rather than mitigating it.
 
 Defence in depth remains: every stored source URL is validated (scheme allowlist; loopback,
 private, link-local and cloud-metadata hosts rejected; no embedded credentials; length capped),
-and the frontend renders links with `rel="noopener noreferrer"`. *(URL validator: M4.)* Fixture sources use an unmistakable
-`fixtures.agentflow.test` host, so a fixture URL can never be mistaken for a
+and the frontend renders links with `rel="noopener noreferrer"`. Fixture sources use an
+unmistakable `fixtures.agentflow.test` host, so a fixture URL can never be mistaken for a
 real one; a test asserts it.
+
+Validation **rejects**; it never sanitises. A validator that quietly repairs a hostile URL
+turns it into an accepted one, which is how allowlist bypasses happen. Canonicalisation is a
+separate function with a separate purpose — deduplication — and the two are deliberately not
+the same code path (ADR-014).
 
 ## Application controls
 
-| Control | Status |
+**Implemented and tested.** "Tested" means a test asserts the behaviour, not that the
+setting exists.
+
+| Control | Where |
 |---|---|
-| Pydantic validation at every API edge | M1 |
-| Consistent error envelope that leaks no internals | M1 |
-| Structured JSON logs with correlation IDs; no prompt content or key material logged | M1 |
-| Session-scoped task access (a visitor sees only their own tasks) | M4 |
-| Per-IP rate limiting (Redis token bucket) | M4 |
-| Daily USD budget ceiling with HTTP 429 over budget | M4 |
-| Request body size limits | M4 |
-| 7-day data retention purge for visitor research content | M4 |
-| BYOK: visitor-supplied key held in memory only, never persisted or logged | M4 |
+| Pydantic validation at every API edge | `app/schemas/`, `tests/test_api.py` |
+| Request field length caps (question and feedback, 2,000 characters) | `app/schemas/task.py` |
+| Consistent error envelope that leaks no internals | `app/api/errors.py` |
+| Structured JSON logs with correlation IDs; no prompt content or key material logged | `app/core/logging.py`, `tests/test_logging.py` |
+| Session-scoped task access — a visitor sees only their own tasks | `app/services/task_service.py`, `tests/test_api.py` |
+| Per-task token and call budget, enforced before each call | `app/graph/`, `tests/test_live_openrouter.py` |
+| Per-task search cap, so a runaway plan cannot drain the search allowance | `app/graph/nodes/research.py` |
+| Per-session rate limiting on write endpoints, with `Retry-After` | `app/adapters/ratelimit/`, `tests/test_rate_limit.py` |
+| Retention sweep deleting research content past `DATA_RETENTION_DAYS` | `app/workers/jobs.py`, `tests/test_retention.py` |
+| URL rejection for unsafe schemes, hosts and credentials | `app/adapters/search/urls.py`, `tests/test_search_urls.py` |
+
+Rate limiting is keyed by session rather than IP, and **fails open** if Redis is unreachable;
+read endpoints are deliberately unlimited because polling is how the UI tracks progress
+(ADR-017).
+
+**Declared in configuration but NOT enforced.** These settings exist in `Settings` and
+`.env.example` and currently do nothing. They are listed here because a setting that looks
+like a safety control but is not wired up is worse than no setting at all:
+
+| Setting | Intended control | Status |
+|---|---|---|
+| `DEMO_DAILY_BUDGET_USD` | Daily USD ceiling across all visitors, HTTP 429 over budget | **not implemented** |
+| `DEMO_MAX_TASKS_PER_SESSION` | Cap on tasks one visitor may submit | **not implemented** |
+| `DEMO_ACCESS_CODE` | Gate live search behind a shared code | **not implemented** |
+
+All three are guards for a *public* deployment, which does not exist yet. They must be
+implemented or removed before the application is exposed publicly; until then the controls
+that actually limit spend are the per-task token, call and search caps above, plus
+`LLM_FREE_MODELS_ONLY`.
 
 ## Provider data policy
 

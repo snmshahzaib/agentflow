@@ -48,7 +48,8 @@ flowchart TB
     UI[React dashboard]
   end
   subgraph api["API process"]
-    RT[Routers] --> SV[Services]
+    RT[Routers] --> RL[rate limiter]
+    RT --> SV[Services]
     SV --> RP[(db queries)]
   end
   subgraph worker["Worker process"]
@@ -66,6 +67,8 @@ flowchart TB
   GR -.checkpoints.-> PG
   LLM --> GW[OpenAI-compatible gateway]
   SRCH --> FX[fixtures / Tavily]
+  RL --> RDS
+  CRON[retention + orphan cron] --> PG
 ```
 
 ## Workflow
@@ -113,6 +116,48 @@ and hold no lock. A task a live worker owns is left alone — adopting it would
 create the second writer the lock exists to prevent — and tasks awaiting
 approval are never adopted, since re-running one would discard the report
 under review.
+
+## The search layer
+
+The search port has two implementations and the nodes cannot tell them apart. Which one runs
+is configuration (`SEARCH_PROVIDER`), and the resolved mode is stored on the task, so a
+report can state what actually produced it rather than what was configured at read time.
+
+| Concern | Where it is handled |
+|---|---|
+| Provider protocol | `app/adapters/search/base.py` |
+| Committed offline corpus | `app/adapters/search/fixture.py` |
+| Live retrieval, retries, `Retry-After` | `app/adapters/search/tavily.py` |
+| Canonicalisation and the dedup digest | `app/adapters/search/urls.py` (`normalise_url`, `url_digest`) |
+| Safety rejection | `app/adapters/search/urls.py` (`validate_url`) |
+| Per-task cap, per-subtask failure isolation | `app/graph/nodes/research.py` |
+
+Three properties are worth stating explicitly because they are easy to get wrong:
+
+**AgentFlow never dereferences a source URL.** The provider supplies the excerpt; we use it.
+That removes the SSRF surface rather than mitigating it (ADR-013), at the cost of shallower
+excerpts than full page text would give.
+
+**Canonicalisation and validation are different operations.** One produces a storage form,
+the other rejects. Validation never repairs a URL, because a repaired hostile URL is an
+accepted one (ADR-014).
+
+**A failed search never becomes substitute data.** The subtask yields nothing, the failure is
+counted and disclosed in the report, and only a total failure fails the task (ADR-015).
+
+## Scheduled work
+
+The worker runs two crons alongside its job handlers:
+
+| Job | Schedule | Purpose |
+|---|---|---|
+| `recover_orphaned_tasks` | every 2 minutes, and at startup | re-queue tasks whose worker died abruptly |
+| `purge_expired_tasks` | daily at 03:17, not at startup | delete research content past `DATA_RETENTION_DAYS` |
+
+The retention sweep deliberately does not run at startup: a restart loop would otherwise
+purge repeatedly. It hard-deletes, and the cascades take sources, reports, claims, evidence
+links, approvals and ledger rows with the task — a deletion that leaves the retrieved
+excerpts behind has not deleted the part that matters.
 
 ## State ownership
 

@@ -107,7 +107,7 @@ curl -s http://localhost:8000/api/meta | jq '{llm_provider, offline_mode, models
 | 404 | No such task **for this session** |
 | 409 | The task is not in a state that permits the operation (e.g. approving a queued task, or approving twice) |
 | 422 | The request body, parameters or a path id were invalid |
-| 429 | Rate limit or daily demo budget exceeded *(M4)* |
+| 429 | Rate limit exceeded on a write endpoint. Carries a `Retry-After` header and `details.retry_after_seconds` |
 | 503 | A dependency is unavailable, or the LLM configuration is unusable |
 
 ## Pagination
@@ -154,9 +154,32 @@ true, and AgentFlow makes no factual-accuracy guarantee. An `unsupported`
 claim carries no `source_ids`: support with nothing to point at is not
 support, and the system downgrades such a verdict automatically.
 
+## Rate limiting
+
+The three write endpoints — submit, approve, request revision — are limited per
+session, per endpoint, to `RATE_LIMIT_PER_MINUTE` requests a minute. Each
+endpoint has its own allowance, so approving a report does not consume a
+submission's budget. Read endpoints are **not** limited: polling is how the UI
+tracks progress.
+
+Over the limit, the response is a 429 carrying the standard error envelope and
+a `Retry-After` header:
+
+```http
+HTTP/1.1 429 Too Many Requests
+Retry-After: 28
+
+{"error":{"code":"rate_limited",
+          "message":"Too many requests. Try again in 28s.",
+          "details":{"limit":20,"window_seconds":60,"retry_after_seconds":28},
+          "correlation_id":"b4352bb5a7b34947815734e90f1e69c2"}}
+```
+
+The limiter fails **open**: if Redis is unreachable the request is allowed
+rather than rejected (ADR-017).
+
 ## Not yet implemented
 
-`POST /api/tasks/{id}/retry` and the session/rate-limit endpoints arrive in
-M4, alongside live search. They are specified in
-`planning/agentflow-refinement-proposal-v2.md` and are deliberately absent
-here rather than stubbed, so this document describes only what exists.
+`POST /api/tasks/{id}/retry` does not exist. It is specified in
+`planning/agentflow-refinement-proposal-v2.md` and is deliberately absent here
+rather than stubbed, so this document describes only what exists.

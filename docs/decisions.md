@@ -278,3 +278,127 @@ runs are disjoint, and fails loudly if the gateway reports none.
 AtlasCloud cannot complete a workflow at all (HTTP 400 on the largest schema).
 That is the kind of fact a fallback chain exists for, and it would have been
 invisible without recording the provider.
+
+---
+
+## ADR-013 — Retrieval is AgentFlow's job, and the URL is never dereferenced
+
+**Status:** accepted (2026-11-17)
+
+**Decision.** The search provider returns titles, URLs and provider-supplied
+excerpts, and AgentFlow uses exactly those. It does not fetch the pages. The
+model is given no tools and no network access, so the only text it ever sees is
+text we requested deliberately.
+
+**Why.** Fetching a URL chosen by a search provider — or worse, by a model —
+is a server-side request forgery primitive. Not fetching removes the class of
+problem rather than mitigating it: there is no request to restrict, no
+redirect chain to follow, no internal address to reach. The cost is that
+excerpts are shorter and shallower than full page text, which is a quality
+trade rather than a safety one.
+
+**Rejected.** Fetching pages ourselves for better excerpts, behind an egress
+allowlist. That reintroduces the whole SSRF surface — redirects, DNS
+rebinding, IPv6 mapping, metadata endpoints — for a quality improvement we can
+live without at this scale.
+
+**Reversal condition.** If excerpt quality becomes the limiting factor on
+report usefulness, fetching could be added as a separate, sandboxed egress
+service with its own allowlist and no access to the application network. It
+would be a new component, not a new capability of this one.
+
+---
+
+## ADR-014 — Normalisation and validation are separate operations
+
+**Status:** accepted (2026-11-17)
+
+**Decision.** `normalise_url` produces the canonical form used for storage and
+the `url_sha256` digest. `validate_url` **rejects** a URL outright. They are
+different functions with different return contracts, and validation never
+sanitises.
+
+**Why.** Conflating them breaks in both directions. A validator that quietly
+"fixes" a URL turns a hostile input into an accepted one, which is how
+allowlist bypasses happen. A normaliser that rejects would drop usable sources
+over a stray tracking parameter. Keeping them apart also makes deduplication
+correct: two links to the same page differing only in `utm_source`, fragment,
+default port or host case collapse to one digest, so the same page is not
+cited twice as two sources.
+
+**Consequence.** Stored URLs are canonical, and the deduplication guarantee is
+a property of the digest rather than of whichever code path happened to insert
+the row. The live run confirmed it: 17 sources, 17 distinct digests.
+
+---
+
+## ADR-015 — A failed search fails its subtask; it is never substituted
+
+**Status:** accepted (2026-11-17)
+
+**Decision.** When retrieval fails for a subtask, that subtask produces no
+sources and the failure is recorded. It is never backfilled from the fixture
+corpus or any other substitute. If **every** subtask fails, the node raises
+`SearchUnavailableError` and the task fails.
+
+**Why.** Substituting fixture data for a failed live search would make a
+report that looks live but is not, which is the one thing the provenance rules
+exist to prevent. Partial evidence is honest and disclosed; fabricated
+evidence is neither. Failing the whole task on one subtask's failure would be
+the opposite error — the surviving subtasks may carry most of the answer, and
+discarding them helps nobody.
+
+**Consequence.** Reports disclose partial research in their limitations
+section, with the count of failed subtasks. The step row records which subtask
+failed and its error code, so a reader of the timeline never has to infer why
+the evidence is thinner than the plan.
+
+---
+
+## ADR-016 — The provider's usage endpoint is not trusted as the budget control
+
+**Status:** accepted (2026-11-17)
+
+**Decision.** The hard control on search spend is the local per-task cap
+(`SEARCH_MAX_PER_TASK`). The provider's usage endpoint is consulted for
+reporting, cached for 150 seconds, and when it cannot be read the guard
+**warns and proceeds** rather than either blocking or claiming a figure.
+
+**Why.** Both failure modes were observed. The endpoint is itself rate-limited
+to roughly 10 requests per 10 minutes, and polling it before every test
+exhausted it in 26 seconds — a budget guard that takes the whole suite down is
+not a control, it is an outage. It also reported `0 of 1000 credits used` after
+roughly 60 real search requests, so its number cannot be relied on as a
+measure of spend either.
+
+**Consequence.** Credit consumption is reported as *AgentFlow's own request
+count*, taken from the step rows, and the ledger says plainly that
+provider-side confirmation was not obtainable. The guard that cannot verify
+spend says so at runtime instead of implying a figure it does not have.
+
+---
+
+## ADR-017 — Rate limiting is keyed by session and fails open
+
+**Status:** accepted (2026-11-17)
+
+**Decision.** A Redis fixed-window limiter guards the three write endpoints,
+keyed by `session:method:path`. If Redis is unreachable the limiter allows the
+request.
+
+**Why.** Session, not IP: the session cookie already scopes everything a
+visitor can reach, while IP is shared behind NAT and trivially rotated.
+Per-path, so that approving a report does not consume a submission's
+allowance. Fixed window rather than a token bucket because the counter is one
+key that Redis expires itself — no state to sweep, no clock to coordinate —
+and the burst it admits at a window boundary does not matter for a guard whose
+job is to stop sustained hammering.
+
+Failing open is the deliberate part. A limiter that rejects requests when its
+own backing store is down converts a Redis blip into an outage, and the
+provider allowance is protected regardless by hard per-task and per-session
+ceilings. The limiter is a convenience control, not the last line of defence.
+
+**Consequence.** Read endpoints are deliberately unlimited: polling is how the
+UI tracks progress, and limiting it would break the thing it is there to
+support.

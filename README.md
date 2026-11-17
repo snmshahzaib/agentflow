@@ -4,7 +4,7 @@
 specialised agents plan it, retrieve evidence, check every claim against its sources, and
 approve the report before it can be exported.
 
-> **Status: in active development — Milestone 3 of 8.**
+> **Status: in active development — Milestone 4 of 8.**
 > This README documents what is *implemented*, not what is planned. The status table below is
 > the authoritative list. Nothing here claims to be production-tested, and no live deployment
 > exists yet.
@@ -86,6 +86,24 @@ This is **containment, not prevention.** Whether a model obeys an injected instr
 property of that model; this project does not measure it and claims nothing about it. See
 [`docs/security.md`](docs/security.md).
 
+### Live web search
+
+With `SEARCH_PROVIDER=tavily` the research node retrieves real pages. Three things are worth
+knowing about how it behaves:
+
+- **URLs are canonicalised before storage.** Tracking parameters, fragments, default ports
+  and host case are stripped, and the `url_sha256` digest is taken from that canonical form,
+  so two links to the same page become one source rather than two citations.
+- **Unsafe URLs are rejected, not repaired.** Scheme allowlist, no embedded credentials, no
+  loopback, private, link-local or cloud-metadata addresses, no bare hostnames.
+- **A failed search fails its subtask and nothing else.** The failure is counted and
+  disclosed in the report's limitations; it is *never* backfilled from the fixture corpus.
+  Only if every subtask fails does the task fail.
+
+Operational guards: `SEARCH_MAX_PER_TASK` caps searches per task so a runaway plan costs one
+task rather than the month's allowance, write endpoints are rate-limited per session, and a
+nightly sweep deletes research content past `DATA_RETENTION_DAYS`.
+
 ## Honest terminology
 
 The `citation_check` node verifies **that a claim points to a retrieved source**. It does not
@@ -116,15 +134,14 @@ variables and validated against the provider catalogue at startup — see
 |---|---|---|
 | M1 | Walking skeleton + LLM config spine | complete |
 | M2 | Fixture research workflow, approval gate, restart recovery | complete |
-| M3 | Live OpenRouter gateway, free profile, cost ledger | **complete — awaiting review** |
-| M3 | Live OpenRouter gateway, capability negotiation, cost ledger | not started |
-| M4 | Tavily search, URL safety, rate limits, retention | not started |
+| M3 | Live OpenRouter gateway, free profile, cost ledger | complete |
+| M4 | Live Tavily search, URL safety, rate limits, retention | **complete — awaiting review** |
 | M5 | Complete frontend | not started |
 | M6 | Verification, documentation, evaluation harness | not started |
 | M7 | Deployment and public repository | not started |
 | M8 | Completion report | not started |
 
-## What exists today (end of M2)
+## What exists today (end of M4)
 
 The complete research workflow runs end to end and is verified in Docker: submit a question,
 and the five nodes plan it, retrieve sources, synthesise findings, check each claim against
@@ -132,15 +149,26 @@ those sources, and draft a report with citations and a generated limitations sec
 workflow then pauses; a reviewer can read the report, send it back with a note, or approve
 it — and only an approved report can be exported.
 
-**Results are deterministic fixture output, not AI research.** The default configuration
-runs a stub model adapter against a committed corpus of synthetic documents. No language
-model is called and no web search happens. Every report carries a notice saying so, every
-source is labelled as a fixture, and the API reports `offline_mode: true`. Live models
-arrive in M3 and live web search in M4.
+**With live providers configured, the research is real.** A verified run retrieved 17
+sources from the public web through Tavily, produced a report with 48 citation links — none
+of which resolved to anything outside the sources actually retrieved — went through a
+revision round and was approved and exported. Full evidence:
+[`docs/milestones/m4-report.md`](docs/milestones/m4-report.md).
+
+**With the default configuration, results are deterministic fixture output, not AI
+research.** `LLM_PROVIDER=stub` and `SEARCH_PROVIDER=fixture` run a stub model adapter
+against a committed corpus of synthetic documents: no language model is called and no web
+search happens. Every report carries a notice saying which combination produced it — the
+notice is derived from the sources actually stored, not from configuration — every source is
+labelled, and the API reports `offline_mode: true`.
 
 What that buys: the whole system — including approval, revision, export restrictions,
 restart recovery and prompt-injection containment — is exercisable by anyone who clones the
 repository, with no API keys and no spend.
+
+**Retrieved is not verified.** Claim checking establishes that a retrieved source *states*
+a claim. It is not a fact check, and it offers no protection against a source being wrong.
+Reports say so in their own limitations section.
 
 ## Quick start
 
@@ -201,6 +229,7 @@ outside Docker, and [`docs/testing.md`](docs/testing.md) for the test commands.
 | [`docs/security.md`](docs/security.md) | Trust boundaries, injection defence, secret handling |
 | [`docs/testing.md`](docs/testing.md) | Test categories and verified results |
 | [`docs/decisions.md`](docs/decisions.md) | Architecture decision records |
+| [`docs/milestones/m4-report.md`](docs/milestones/m4-report.md) | Live web research: what was verified, and what was not |
 
 ## Licence
 
