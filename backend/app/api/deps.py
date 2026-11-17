@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.llm.registry import LLMRuntime
 from app.adapters.queue.base import TaskQueue
+from app.adapters.ratelimit.base import RateLimiter
 from app.core.config import Settings, get_settings
 from app.core.security import (
     SESSION_COOKIE_NAME,
@@ -18,6 +19,7 @@ from app.core.security import (
     verify_session_cookie,
 )
 from app.db.session import session_scope
+from app.domain.errors import RateLimitedError
 from app.services.task_service import TaskService
 
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -63,6 +65,44 @@ DbDep = Annotated[AsyncSession, Depends(get_db)]
 def get_queue(request: Request) -> TaskQueue:
     queue: TaskQueue = request.app.state.queue
     return queue
+
+
+def get_rate_limiter(request: Request) -> RateLimiter:
+    limiter: RateLimiter = request.app.state.rate_limiter
+    return limiter
+
+
+RateLimiterDep = Annotated[RateLimiter, Depends(get_rate_limiter)]
+
+
+async def enforce_rate_limit(
+    request: Request,
+    settings: SettingsDep,
+    session_id: SessionDep,
+    limiter: RateLimiterDep,
+) -> None:
+    """Reject a caller who is submitting faster than the configured rate.
+
+    Keyed by session rather than by IP: the session cookie is what scopes
+    everything else a visitor can reach, and IP is both shared behind NAT and
+    trivially rotated. The method and path are part of the key so that
+    approving a report does not consume a submission's allowance.
+
+    Raises ``RateLimitedError`` (HTTP 429) carrying the seconds until the
+    window resets.
+    """
+    key = f"{session_id}:{request.method}:{request.url.path}"
+    decision = await limiter.check(key, limit=settings.rate_limit_per_minute, window_seconds=60)
+    if not decision.allowed:
+        raise RateLimitedError(
+            f"Too many requests. Try again in {decision.retry_after_seconds}s.",
+            limit=decision.limit,
+            window_seconds=60,
+            retry_after_seconds=decision.retry_after_seconds,
+        )
+
+
+RateLimited = Depends(enforce_rate_limit)
 
 
 def get_llm_runtime(request: Request) -> LLMRuntime:

@@ -15,17 +15,19 @@ from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.llm.registry import STUB_MODEL_ID, LLMRuntime
 from app.adapters.llm.stub import StubLLMClient
+from app.adapters.ratelimit.base import RateLimitDecision
 from app.api.deps import (
     get_db,
     get_llm_runtime,
     get_llm_runtime_if_ready,
     get_queue,
     get_queue_if_ready,
+    get_rate_limiter,
 )
 from app.core.config import get_settings
 from app.core.security import SESSION_COOKIE_NAME, new_session_id, sign_session_id
@@ -71,6 +73,24 @@ class FakeQueue:
         return True
 
 
+class CountingLimiter:
+    """In-memory rate limiter. Counts per key and refuses past the limit.
+
+    The real limiter is Redis-backed and tested separately; what the API
+    tests need is control over the verdict, not a second Redis.
+    """
+
+    def __init__(self, *, allow: bool = True) -> None:
+        self.allow = allow
+        self.calls: list[str] = []
+
+    async def check(self, key: str, *, limit: int, window_seconds: int) -> RateLimitDecision:
+        self.calls.append(key)
+        used = self.calls.count(key)
+        allowed = self.allow and used <= limit
+        return RateLimitDecision(allowed=allowed, used=used, limit=limit, retry_after_seconds=37)
+
+
 def stub_runtime() -> LLMRuntime:
     return LLMRuntime(
         client=StubLLMClient({}),
@@ -82,11 +102,14 @@ def stub_runtime() -> LLMRuntime:
 
 @pytest.fixture
 async def api(db_session: AsyncSession) -> AsyncIterator[tuple[AsyncClient, FakeQueue]]:
-    """The real app, with the queue and provider replaced by fakes."""
+    """The real app, with the queue, provider and limiter replaced by fakes."""
     settings = make_settings(session_secret=SESSION_SECRET)
     get_settings.cache_clear()
     app = create_app()
     queue = FakeQueue()
+    # The ASGI transport does not run the lifespan, so nothing has populated
+    # app.state; the limiter is injected the same way the queue is.
+    app.dependency_overrides[get_rate_limiter] = lambda: CountingLimiter()
 
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_db] = lambda: db_session
@@ -604,3 +627,99 @@ class TestSourcesAndClaims:
         client, _, _ = session_client
         task_id = (await client.post("/api/tasks", json={"question": QUESTION})).json()["id"]
         assert (await client.get(f"/api/tasks/{task_id}/report")).status_code == 404
+
+
+class TestRateLimiting:
+    """The limit is enforced at the edge, and says when to come back."""
+
+    @pytest.fixture
+    async def limited_api(
+        self, db_session: AsyncSession
+    ) -> AsyncIterator[tuple[AsyncClient, CountingLimiter]]:
+        settings = make_settings(session_secret=SESSION_SECRET, rate_limit_per_minute=2)
+        get_settings.cache_clear()
+        app = create_app()
+        limiter = CountingLimiter()
+
+        app.dependency_overrides[get_settings] = lambda: settings
+        app.dependency_overrides[get_db] = lambda: db_session
+        app.dependency_overrides[get_queue] = lambda: FakeQueue()
+        app.dependency_overrides[get_llm_runtime] = stub_runtime
+        app.dependency_overrides[get_rate_limiter] = lambda: limiter
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            client.cookies.set(
+                SESSION_COOKIE_NAME, sign_session_id(new_session_id(), SESSION_SECRET)
+            )
+            yield client, limiter
+
+    async def test_submissions_past_the_limit_are_refused_with_429(
+        self, limited_api: tuple[AsyncClient, CountingLimiter]
+    ) -> None:
+        client, _ = limited_api
+        statuses = [
+            (await client.post("/api/tasks", json={"question": QUESTION})).status_code
+            for _ in range(4)
+        ]
+        assert statuses == [202, 202, 429, 429]
+
+    async def test_a_refusal_carries_retry_after_and_the_standard_envelope(
+        self, limited_api: tuple[AsyncClient, CountingLimiter]
+    ) -> None:
+        client, _ = limited_api
+        for _ in range(3):
+            response = await client.post("/api/tasks", json={"question": QUESTION})
+
+        assert response.status_code == 429
+        # Without this header a client has to guess, and clients guess by
+        # retrying immediately.
+        assert response.headers["retry-after"] == "37"
+        error = response.json()["error"]
+        assert error["code"] == "rate_limited"
+        assert error["details"]["limit"] == 2
+        assert error["details"]["retry_after_seconds"] == 37
+        assert error["correlation_id"]
+
+    async def test_a_refused_submission_creates_no_task(
+        self, limited_api: tuple[AsyncClient, CountingLimiter], db_session: AsyncSession
+    ) -> None:
+        client, _ = limited_api
+
+        def count() -> Any:
+            return db_session.scalar(select(func.count()).select_from(ResearchTask))
+
+        before = await count()
+        statuses = [
+            (await client.post("/api/tasks", json={"question": QUESTION})).status_code
+            for _ in range(3)
+        ]
+
+        assert statuses == [202, 202, 429]
+        # Two accepted, and the refusal rejected before any row was written:
+        # the limiter runs as a dependency, ahead of the handler.
+        assert await count() - before == 2
+
+    async def test_each_endpoint_has_its_own_allowance(
+        self, limited_api: tuple[AsyncClient, CountingLimiter]
+    ) -> None:
+        """Approving a report must not spend a submission's budget."""
+        client, limiter = limited_api
+        created = await client.post("/api/tasks", json={"question": QUESTION})
+        task_id = created.json()["id"]
+
+        await client.post(f"/api/tasks/{task_id}/approve", json={})
+
+        keys = limiter.calls
+        assert len({k.split(":", 1)[1] for k in keys}) == 2, keys
+        assert any(k.endswith("POST:/api/tasks") for k in keys)
+        assert any(k.endswith(f"POST:/api/tasks/{task_id}/approve") for k in keys)
+
+    async def test_read_endpoints_are_not_limited(
+        self, limited_api: tuple[AsyncClient, CountingLimiter]
+    ) -> None:
+        """Polling is how the UI tracks progress; limiting it would break it."""
+        client, limiter = limited_api
+        for _ in range(6):
+            assert (await client.get("/api/tasks")).status_code == 200
+        assert limiter.calls == []

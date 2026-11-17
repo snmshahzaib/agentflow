@@ -12,7 +12,7 @@ from uuid import UUID
 from fastapi import APIRouter, Header, Query, Response, status
 from fastapi.responses import PlainTextResponse
 
-from app.api.deps import SessionDep, TaskServiceDep
+from app.api.deps import RateLimited, SessionDep, TaskServiceDep
 from app.core.logging import get_logger
 from app.domain.enums import ApprovalAction
 from app.graph.binding import label_for
@@ -38,6 +38,10 @@ _ERRORS: dict[int | str, dict[str, object]] = {
     404: {"model": ErrorResponse, "description": "No such task for this session."},
     409: {"model": ErrorResponse, "description": "The task is in an incompatible state."},
     422: {"model": ErrorResponse, "description": "The request was not valid."},
+    429: {
+        "model": ErrorResponse,
+        "description": "Rate limit exceeded; see the Retry-After header.",
+    },
 }
 
 
@@ -47,6 +51,7 @@ _ERRORS: dict[int | str, dict[str, object]] = {
     status_code=status.HTTP_202_ACCEPTED,
     summary="Submit a research task",
     responses=_ERRORS,
+    dependencies=[RateLimited],
 )
 async def create_task(
     payload: TaskCreate,
@@ -114,6 +119,7 @@ async def get_steps(
     response_model=ApprovalResult,
     summary="Approve the current report",
     responses=_ERRORS,
+    dependencies=[RateLimited],
 )
 async def approve_task(
     task_id: UUID,
@@ -141,6 +147,7 @@ async def approve_task(
     response_model=ApprovalResult,
     summary="Send the report back for revision",
     responses=_ERRORS,
+    dependencies=[RateLimited],
 )
 async def request_revision(
     task_id: UUID,

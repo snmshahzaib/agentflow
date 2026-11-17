@@ -13,10 +13,12 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from redis.asyncio import Redis
 
 from app import __version__
 from app.adapters.llm.registry import build_llm_runtime
 from app.adapters.queue.arq_queue import ArqTaskQueue
+from app.adapters.ratelimit.redis_window import RedisWindowRateLimiter
 from app.api.errors import register_exception_handlers
 from app.api.middleware import CorrelationMiddleware
 from app.api.routers import health, meta, tasks
@@ -48,6 +50,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     init_engine(settings)
     app.state.queue = await ArqTaskQueue.connect(settings.redis_url)
     app.state.llm_runtime = await build_llm_runtime(settings)
+    # A connection of its own rather than arq's pool: the queue is a port that
+    # may not be Redis-backed, and the limiter should not reach through it.
+    app.state.rate_limit_redis = Redis.from_url(settings.redis_url, decode_responses=True)
+    app.state.rate_limiter = RedisWindowRateLimiter(app.state.rate_limit_redis)
 
     log.info(
         "api_started",
@@ -62,6 +68,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         await app.state.llm_runtime.client.aclose()
         await app.state.queue.aclose()
+        await app.state.rate_limit_redis.aclose()
         await dispose_engine()
         log.info("api_stopped")
 

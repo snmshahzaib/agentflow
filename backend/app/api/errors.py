@@ -50,6 +50,13 @@ def status_for(error: AgentFlowError) -> int:
 def error_response(
     *, code: str, message: str, http_status: int, details: dict[str, object] | None = None
 ) -> JSONResponse:
+    # A 429 that does not say when to come back forces the client to guess,
+    # and clients guess by retrying immediately. Promote the hint the error
+    # already carries into the standard header.
+    headers: dict[str, str] | None = None
+    retry_after = (details or {}).get("retry_after_seconds")
+    if http_status == status.HTTP_429_TOO_MANY_REQUESTS and isinstance(retry_after, int):
+        headers = {"Retry-After": str(retry_after)}
     return JSONResponse(
         status_code=http_status,
         content={
@@ -60,6 +67,7 @@ def error_response(
                 "correlation_id": get_correlation_id(),
             }
         },
+        headers=headers,
     )
 
 
