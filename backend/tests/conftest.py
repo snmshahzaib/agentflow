@@ -7,7 +7,10 @@ own configuration explicitly.
 
 from __future__ import annotations
 
+import asyncio
 import os
+import time
+import warnings
 from collections.abc import AsyncIterator, Iterator
 from typing import TYPE_CHECKING, Any
 
@@ -340,3 +343,200 @@ def pytest_runtest_call(item: pytest.Item):  # type: ignore[no-untyped-def]
             _use_item_location=True,
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Live search fixtures (consume Tavily credits; skipped unless configured)
+# ---------------------------------------------------------------------------
+
+#: Approved ceiling on Tavily credits for M4 verification. Enforced against
+#: the provider's own reported usage, not against an intention: a budget that
+#: exists only in a plan bounds nothing.
+LIVE_SEARCH_CREDIT_BUDGET = int(os.environ.get("M4_SEARCH_CREDIT_BUDGET", "150"))
+
+#: Captured at import, before the environment-isolation fixture strips it.
+LIVE_SEARCH_API_KEY = os.environ.get("SEARCH_API_KEY", "").strip()
+LIVE_SEARCH_BASE_URL = os.environ.get("SEARCH_BASE_URL", "https://api.tavily.com")
+
+LIVE_SEARCH_ENABLED = (
+    os.environ.get("SEARCH_PROVIDER", "").lower() == "tavily"
+    and bool(LIVE_SEARCH_API_KEY)
+    and not LIVE_SEARCH_API_KEY.startswith("__")
+)
+
+
+async def tavily_credits_used() -> int | None:
+    """Credits consumed this billing cycle, from Tavily's usage endpoint.
+
+    Metadata rather than retrieval: reading it costs no search credit.
+    """
+    from app.adapters.search.tavily import TavilySearchProvider
+
+    provider = TavilySearchProvider(
+        api_key=LIVE_SEARCH_API_KEY,
+        base_url=LIVE_SEARCH_BASE_URL,
+        timeout_seconds=20.0,
+        max_attempts=1,
+    )
+    try:
+        payload = await provider.usage()
+    except Exception:
+        return None
+    finally:
+        await provider.aclose()
+    used = (payload.get("account") or {}).get("plan_usage")
+    return int(used) if isinstance(used, int | float) else None
+
+
+@pytest.fixture(scope="session")
+def search_credit_baseline() -> int:
+    """Credits already used when this session began.
+
+    The budget is measured as a delta from here, so a prior month's usage on
+    the same key does not eat into the approved allowance.
+    """
+    used = asyncio.run(cached_credits_used())
+    return used or 0
+
+
+#: Tavily's usage endpoint has its own, much tighter limit -- 10 requests per
+#: 10 minutes -- so polling it before every test makes the pre-flight check
+#: the bottleneck. Observed exactly that: eight tests exhausted it in 26
+#: seconds. The reading is cached and refreshed at most this often.
+_USAGE_CACHE_TTL_SECONDS = 150.0
+_usage_cache: dict[str, float | int | None] = {"at": 0.0, "used": None}
+
+
+async def cached_credits_used() -> int | None:
+    """Credits used, refreshed at most once per TTL."""
+    now = time.monotonic()
+    last = float(_usage_cache["at"] or 0.0)
+    if _usage_cache["used"] is not None and (now - last) < _USAGE_CACHE_TTL_SECONDS:
+        cached = _usage_cache["used"]
+        return int(cached) if cached is not None else None
+
+    used = await tavily_credits_used()
+    if used is not None:
+        _usage_cache["at"] = now
+        _usage_cache["used"] = used
+    return used
+
+
+@pytest.fixture
+async def search_budget_guard(search_credit_baseline: int) -> int:
+    """Refuse to start another live-search test once the budget is spent.
+
+    Enforced against Tavily's own reported usage rather than an intention.
+    The reading is cached, because the usage endpoint's rate limit is far
+    tighter than search's and polling it per test exhausts it.
+    """
+    used = await cached_credits_used()
+    if used is None:
+        # Deliberately not a hard failure: the usage endpoint being
+        # rate-limited is not a reason to abandon a verification run, and the
+        # per-task search cap plus the absence of a payment method already
+        # bound the damage. Visible rather than silent.
+        warnings.warn(
+            "Tavily usage is unreadable (likely its own rate limit); "
+            "proceeding under the per-task search cap.",
+            stacklevel=2,
+        )
+        return 0
+
+    spent = used - search_credit_baseline
+    if spent >= LIVE_SEARCH_CREDIT_BUDGET:
+        pytest.fail(
+            f"Tavily credit budget exhausted: {spent} of "
+            f"{LIVE_SEARCH_CREDIT_BUDGET} approved credits used this session. "
+            "Raise M4_SEARCH_CREDIT_BUDGET only with the owner's approval."
+        )
+    return spent
+
+
+@pytest.fixture
+async def live_search_only_deps(
+    live_database: str,
+    search_budget_guard: int,
+) -> AsyncIterator[NodeDeps]:
+    """**Live Tavily search with the deterministic stub model.**
+
+    Retrieval behaviour can be proven without spending model quota, and the
+    free OpenRouter allowance is the scarcer of the two resources, so every
+    search-only assertion runs through this fixture rather than the full
+    live one.
+    """
+    from app.adapters.llm.stub import StubLLMClient
+    from app.adapters.search.registry import build_search_provider
+    from app.graph.deps import NodeDeps
+
+    settings = Settings(
+        _env_file=None,
+        app_env="test",
+        search_provider="tavily",
+        search_api_key=LIVE_SEARCH_API_KEY,
+        search_base_url=LIVE_SEARCH_BASE_URL,
+        search_depth="basic",
+        search_max_per_task=8,
+        search_max_results_per_subtask=4,
+        database_url=live_database,
+    )
+    search = build_search_provider(settings)
+    engine = create_async_engine(live_database, poolclass=NullPool)
+    try:
+        yield NodeDeps(
+            settings=settings,
+            session_factory=async_sessionmaker(engine, expire_on_commit=False),
+            llm=StubLLMClient(),
+            search=search,
+        )
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+async def live_search_deps(
+    live_database: str,
+    live_budget_guard: float,
+    search_budget_guard: int,
+) -> AsyncIterator[NodeDeps]:
+    """Free OpenRouter models plus **live Tavily search**.
+
+    Both guards apply: the model spend ceiling from M3 and the search credit
+    budget from M4.
+    """
+    from app.adapters.llm.registry import build_llm_runtime
+    from app.adapters.search.registry import build_search_provider
+    from app.graph.deps import NodeDeps
+
+    settings = Settings(
+        _env_file=None,
+        app_env="test",
+        llm_provider="openrouter",
+        llm_api_key=LIVE_API_KEY,
+        llm_base_url=LIVE_BASE_URL,
+        llm_model_default=LIVE_DEV_MODEL,
+        llm_free_models_only=True,
+        llm_max_attempts=2,
+        llm_timeout_seconds=600.0,
+        search_provider="tavily",
+        search_api_key=LIVE_SEARCH_API_KEY,
+        search_base_url=LIVE_SEARCH_BASE_URL,
+        search_depth="basic",
+        search_max_per_task=8,
+        search_max_results_per_subtask=4,
+        database_url=live_database,
+    )
+    runtime = await build_llm_runtime(settings)
+    search = build_search_provider(settings)
+    engine = create_async_engine(live_database, poolclass=NullPool)
+    try:
+        yield NodeDeps(
+            settings=settings,
+            session_factory=async_sessionmaker(engine, expire_on_commit=False),
+            llm=runtime.client,
+            search=search,
+        )
+    finally:
+        await runtime.client.aclose()
+        await search.aclose()
+        await engine.dispose()
