@@ -4,7 +4,7 @@
 specialised agents plan it, retrieve evidence, check every claim against its sources, and
 approve the report before it can be exported.
 
-> **Status: in active development — Milestone 2 of 8.**
+> **Status: in active development — Milestone 3 of 8.**
 > This README documents what is *implemented*, not what is planned. The status table below is
 > the authoritative list. Nothing here claims to be production-tested, and no live deployment
 > exists yet.
@@ -115,7 +115,8 @@ variables and validated against the provider catalogue at startup — see
 | Milestone | Scope | Status |
 |---|---|---|
 | M1 | Walking skeleton + LLM config spine | complete |
-| M2 | Fixture research workflow, approval gate, restart recovery | **complete — awaiting review** |
+| M2 | Fixture research workflow, approval gate, restart recovery | complete |
+| M3 | Live OpenRouter gateway, free profile, cost ledger | **complete — awaiting review** |
 | M3 | Live OpenRouter gateway, capability negotiation, cost ledger | not started |
 | M4 | Tavily search, URL safety, rate limits, retention | not started |
 | M5 | Complete frontend | not started |

@@ -382,6 +382,14 @@ class OpenAICompatibleLLMClient:
             extra = getattr(raw_usage, "model_extra", None) or {}
             reported = extra.get("cost")
 
+        # OpenRouter reports the serving company on the response. Read
+        # defensively: it is a gateway extension, not part of the
+        # OpenAI-compatible contract.
+        provider_served = getattr(response, "provider", None)
+        if provider_served is None:
+            extra = getattr(response, "model_extra", None) or {}
+            provider_served = extra.get("provider")
+
         return CallUsage(
             node=node,
             provider=self._provider,
@@ -397,6 +405,7 @@ class OpenAICompatibleLLMClient:
             cache_read_tokens=cache_read,
             latency_ms=latency_ms,
             generation_id=getattr(response, "id", None),
+            provider_served=str(provider_served) if provider_served else None,
             cost_usd_estimate=estimate_cost_usd(
                 caps, tokens_in=tokens_in, tokens_out=tokens_out, cache_read_tokens=cache_read
             ),

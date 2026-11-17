@@ -99,6 +99,11 @@ class CallUsage:
     cache_read_tokens: int
     latency_ms: int
     generation_id: str | None = None
+    #: The company that actually served the request, as reported by the
+    #: gateway. Distinct from ``model_served``: two different model ids can
+    #: be hosted by the same provider, so vendor diversity cannot be inferred
+    #: from model ids alone.
+    provider_served: str | None = None
     cost_usd_estimate: float | None = None
     cost_usd_reported: float | None = None
 

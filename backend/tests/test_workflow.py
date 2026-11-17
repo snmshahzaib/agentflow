@@ -24,13 +24,23 @@ from app.db.models import (
     Source,
     WorkflowStep,
 )
-from app.domain.enums import ApprovalAction, ReportStatus, StepStatus, SupportStatus
+from app.domain.enums import (
+    ApprovalAction,
+    LLMProvider,
+    ReportStatus,
+    SearchMode,
+    StepStatus,
+    SupportStatus,
+)
 from app.domain.nodes import LLM_NODES, NODE_ORDER, NodeName
 from app.graph.builder import build_graph
 from app.graph.deps import NodeDeps
 from tests.conftest import create_task_row
 
 pytestmark = pytest.mark.integration
+
+# The provenance-notice tests at the end of this module are pure and override
+# the module marker individually.
 
 QUESTION = "Compare three open-source workflow orchestration frameworks for a small team."
 
@@ -299,3 +309,81 @@ class TestApprovalAndRevision:
         )
         state = await graph.aget_state(config)
         assert state.next, "a revised report must wait for approval too"
+
+
+@pytest.mark.parametrize(
+    ("llm_provider", "search_mode", "must_contain", "must_not_contain"),
+    [
+        (
+            LLMProvider.STUB,
+            SearchMode.FIXTURE,
+            "No language model was called",
+            "Real model output",
+        ),
+        (
+            LLMProvider.OPENROUTER,
+            SearchMode.FIXTURE,
+            "Real model output over fixture sources",
+            "No language model was called",
+        ),
+        (
+            LLMProvider.STUB,
+            SearchMode.TAVILY,
+            "Fixture text over real sources",
+            "No language model was called",
+        ),
+    ],
+)
+def test_the_provenance_notice_matches_what_actually_ran(
+    llm_provider: LLMProvider,
+    search_mode: SearchMode,
+    must_contain: str,
+    must_not_contain: str,
+) -> None:
+    """Regression test for a false provenance claim.
+
+    The notice originally fired when the provider was a stub *or* search was
+    fixtures, so a live model reasoning over fixture sources produced a report
+    stating "No language model was called" — while its own limitations section
+    named the model that wrote it. A live run surfaced it.
+    """
+    from app.graph.report import ReportProvenance, provenance_notice
+
+    notice = provenance_notice(
+        ReportProvenance(
+            search_mode=search_mode,
+            llm_provider=llm_provider,
+            models_served=("vendor/model",),
+            source_count=8,
+            subtask_count=3,
+            tokens_used=1000,
+            calls_used=4,
+            version=1,
+            revision_count=0,
+        )
+    )
+    assert notice is not None
+    assert must_contain in notice
+    assert must_not_contain not in notice
+
+
+def test_a_fully_live_report_carries_no_provenance_notice() -> None:
+    """With a real model over real sources there is nothing to disclaim."""
+    from app.graph.report import ReportProvenance, provenance_notice
+
+    assert (
+        provenance_notice(
+            ReportProvenance(
+                search_mode=SearchMode.TAVILY,
+                llm_provider=LLMProvider.OPENROUTER,
+                models_served=("vendor/model",),
+                source_count=8,
+                subtask_count=3,
+                tokens_used=1000,
+                calls_used=4,
+                version=1,
+                revision_count=0,
+            )
+        )
+        is None
+    )

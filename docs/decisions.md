@@ -226,3 +226,55 @@ rises, and the adapter honours a provider's `Retry-After` hint over its own
 backoff. The free profile is for exercising the workflow without spend; its
 output quality is not comparable to the paid profile and is not presented as
 though it were.
+
+
+---
+
+## ADR-011 — The provenance notice describes the actual combination, not a guess
+
+**Status:** accepted (2026-11-17)
+
+**Context.** A live run against a free model produced a report containing both
+*"No language model was called and no web search was performed"* and
+*"Written by model(s): `baidu/ernie-5.5-flash-preview:free`"*. The notice fired
+when the provider was a stub **or** search was fixtures, so a real model
+reasoning over fixture sources was labelled fully offline.
+
+**Decision.** Four combinations, three notices, one silence: fully offline;
+real model over fixture sources; stub text over real sources; and nothing at
+all when both are live.
+
+**Why it matters more than it looks.** This project's central promise is that
+it never overstates what produced a result. A report claiming no model was
+called while a model wrote it is the exact failure the honesty rules exist to
+prevent — and it was *understating* rather than overstating, which is why no
+existing test caught it. Four pure unit tests now cover the combinations, and
+the live test asserts the live-model-over-fixtures wording directly.
+
+**How it was found.** By reading the output of the first live run, not by a
+test. Worth remembering: the assertions were checking for the presence of
+correct strings and the absence of one wrong string, and the wrong string that
+mattered was not on the list.
+
+---
+
+## ADR-012 — Vendor identity is recorded, not inferred from model ids
+
+**Status:** accepted (2026-11-17)
+
+**Decision.** `llm_calls.provider_served` records the company the gateway
+reports as having served each call, alongside `model_requested` and
+`model_served`.
+
+**Why.** A two-vendor claim cannot be supported by model ids. Two ids can be
+hosted by the same company, and a meta-router can route both to one backend —
+`openrouter/free` demonstrably routes to `baidu/ernie-5.5-flash-preview:free`,
+so treating it as a second vendor would have been a false claim. The
+injection test now asserts that the providers which actually served the two
+runs are disjoint, and fails loudly if the gateway reports none.
+
+**Consequence.** Three distinct providers were verified by observation —
+`Baidu`, `Ant Digital` and `AtlasCloud` — along with the finding that
+AtlasCloud cannot complete a workflow at all (HTTP 400 on the largest schema).
+That is the kind of fact a fallback chain exists for, and it would have been
+invisible without recording the provider.

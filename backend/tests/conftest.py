@@ -267,7 +267,7 @@ async def live_budget_guard(live_database: str) -> float:
 
 
 @pytest.fixture
-async def live_deps(migrated_database: str, live_budget_guard: float) -> AsyncIterator[NodeDeps]:
+async def live_deps(live_database: str, live_budget_guard: float) -> AsyncIterator[NodeDeps]:
     """Node dependencies wired to the real OpenRouter gateway.
 
     Search stays on fixtures: M3 is the live *model* milestone, and live web

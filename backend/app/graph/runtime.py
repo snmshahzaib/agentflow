@@ -153,6 +153,7 @@ async def _record_usage(deps: NodeDeps, task_id: uuid.UUID, usage: CallUsage) ->
                 model_served=usage.model_served,
                 output_mode=usage.output_mode,
                 generation_id=usage.generation_id,
+                provider_served=usage.provider_served,
                 tokens_in=usage.tokens_in,
                 tokens_out=usage.tokens_out,
                 cache_read_tokens=usage.cache_read_tokens,

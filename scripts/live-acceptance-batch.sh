@@ -59,7 +59,10 @@ try:
     d = json.load(sys.stdin).get('data', {})
 except Exception:
     print('  (could not read key metadata)'); raise SystemExit(0)
-for k in ('label','usage','limit','limit_remaining','is_free_tier','rate_limit'):
+# Allow-list only. OpenRouter's 'label' field carries a truncated form of the
+# key itself, so fields are named explicitly rather than filtered out -- a
+# deny-list would leak the next credential-shaped field the API adds.
+for k in ('free_model_daily_requests', 'limit_remaining', 'usage', 'is_free_tier'):
     if k in d: print(f'  {k}: {d[k]}')
 " || echo "  (key metadata unavailable)"
 
@@ -71,7 +74,7 @@ env LLM_PROVIDER=openrouter LLM_API_KEY="$KEY" \
     LLM_REQUIRE_STRUCTURED_OUTPUT=true \
     LLM_DATA_COLLECTION=deny \
     LLM_MAX_ATTEMPTS=2 \
-    LLM_TIMEOUT_SECONDS=180 \
+    LLM_TIMEOUT_SECONDS="${LLM_TIMEOUT_SECONDS:-180}" \
     M3_FREE_ONLY=true \
     M3_DEV_MODEL="$FREE_PRIMARY" \
     M3_ALT_MODEL="$FREE_ALT" \

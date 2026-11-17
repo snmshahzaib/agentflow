@@ -389,6 +389,10 @@ class LLMCall(Base):
     output_mode: Mapped[OutputMode] = mapped_column(_enum(OutputMode, "output_mode"))
     #: Provider-side generation identifier, for reconciling reported cost.
     generation_id: Mapped[str | None] = mapped_column(String(128))
+    #: The company that served the request, as reported by the gateway. Kept
+    #: because vendor diversity cannot be inferred from model ids: two model
+    #: ids may be hosted by the same provider.
+    provider_served: Mapped[str | None] = mapped_column(String(64))
 
     tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     tokens_out: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

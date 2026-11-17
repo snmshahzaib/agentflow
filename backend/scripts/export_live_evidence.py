@@ -113,6 +113,7 @@ async def collect() -> dict[str, Any]:
                 "attempt": c.attempt,
                 "model_requested": c.model_requested,
                 "model_served": c.model_served,
+                "provider_served": c.provider_served,
                 "output_mode": c.output_mode.value if c.output_mode else None,
                 "tokens_in": c.tokens_in,
                 "tokens_out": c.tokens_out,

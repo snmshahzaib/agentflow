@@ -13,12 +13,31 @@ from dataclasses import dataclass
 from app.domain.enums import LLMProvider, SearchMode, SupportStatus
 
 #: Shown when neither the model nor retrieval touched the network.
-OFFLINE_NOTICE = (
+FULLY_OFFLINE_NOTICE = (
     "> **Deterministic fixture result — not live AI research.**\n"
     "> This report was produced with a stub model adapter and a committed\n"
     "> fixture corpus. No language model was called and no web search was\n"
     "> performed. Content is repeatable and exists to demonstrate the\n"
     "> workflow, not to inform a real decision."
+)
+
+#: Shown when a real model reasoned over fixture sources. Distinct from the
+#: fully-offline notice because claiming "no language model was called" when
+#: one wrote the report would be exactly the false provenance this project
+#: exists to avoid.
+LIVE_MODEL_FIXTURE_SOURCES_NOTICE = (
+    "> **Real model output over fixture sources — not live research.**\n"
+    "> A language model genuinely produced the analysis below, but the sources\n"
+    "> it reasoned over come from a committed corpus of synthetic documents,\n"
+    "> not from live web search. Nothing here reflects the current state of\n"
+    "> the world, and it should not inform a real decision."
+)
+
+#: Shown when a stub produced the text over genuinely retrieved sources.
+STUB_MODEL_LIVE_SOURCES_NOTICE = (
+    "> **Fixture text over real sources — not AI research.**\n"
+    "> Sources below were genuinely retrieved, but the prose was produced by a\n"
+    "> deterministic stub adapter rather than a language model."
 )
 
 _SUPPORT_LABEL = {
@@ -71,8 +90,9 @@ def render_report(
     """Render the full Markdown report."""
     parts: list[str] = [f"# {title}", ""]
 
-    if provenance.llm_provider is LLMProvider.STUB or provenance.search_mode is SearchMode.FIXTURE:
-        parts += [OFFLINE_NOTICE, ""]
+    notice = provenance_notice(provenance)
+    if notice is not None:
+        parts += [notice, ""]
 
     parts += ["## Summary", "", summary.strip(), ""]
 
@@ -84,6 +104,26 @@ def render_report(
     parts += _render_limitations(claims, provenance)
 
     return "\n".join(parts).rstrip() + "\n"
+
+
+def provenance_notice(provenance: ReportProvenance) -> str | None:
+    """The banner that matches what actually produced this report.
+
+    Four combinations, three notices, one silence. The distinction matters:
+    a live model reasoning over fixture sources must not be described as
+    "no language model was called", and fixture sources must not pass as
+    research whoever wrote the prose.
+    """
+    stub_model = provenance.llm_provider is LLMProvider.STUB
+    fixture_sources = provenance.search_mode is SearchMode.FIXTURE
+
+    if stub_model and fixture_sources:
+        return FULLY_OFFLINE_NOTICE
+    if fixture_sources:
+        return LIVE_MODEL_FIXTURE_SOURCES_NOTICE
+    if stub_model:
+        return STUB_MODEL_LIVE_SOURCES_NOTICE
+    return None
 
 
 def _render_claim_support(claims: list[RenderedClaim]) -> list[str]:

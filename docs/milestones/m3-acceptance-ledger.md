@@ -15,49 +15,80 @@ destroy.
 
 ---
 
-## Status as of 2026-11-16
+## Status as of 2026-11-17 — all batches verified
 
-| # | Criterion | Status | Calls | Evidence |
-|---|---|---|---|---|
-| A | End-to-end live workflow | **demonstrated, test not green** | 4 | Full 5-node run completed on `baidu/ernie-5.5-flash-preview:free`; per-node metrics captured (below). The automated assertion failed first on a harness bug (since fixed) and then on quota, so the *test* has never gone green. |
-| B | Strict structured-output validation | **passed** | 12 | Catalogue probe: 3 free models returned schema-valid output at the native `json_schema` tier. Spend $0.000000. |
-| C | Per-node model selection reaches the provider | **blocked — quota** | 1 | — |
-| D | Cross-vendor fallback | **blocked — quota** | 2 | — |
-| E | Budget exhaustion leaves no report | **blocked — quota** | 2 | — |
-| F | Invalid model refused at startup | **blocked — quota** | 0 | Needs a live catalogue fetch only; no inference call. |
-| G | Unreachable gateway reported, not hung | **blocked — quota** | 0 | No request reaches the provider. |
-| H | Bad credential is terminal, not retried | **blocked — quota** | 1 | — |
-| I | Injection containment, vendor 1 | **blocked — quota** | 4 | — |
-| J | Injection containment, vendor 2 | **blocked — quota** | 4 | — |
-| K | No M1/M2 regression | **passed** | 0 | 298 offline tests pass (190 unit, 108 integration). |
-| — | Containment firing on a real model | **observed** | — | `verdicts_downgraded_without_sources downgraded=2` during the run in A: two claims the model marked supported cited nothing resolvable and were downgraded. |
+Run against the free profile: `LLM_FREE_MODELS_ONLY=true`,
+`LLM_REQUIRE_STRUCTURED_OUTPUT=true`, `LLM_DATA_COLLECTION=deny`,
+`SEARCH_PROVIDER=fixture`. **Total spend $0.00**, confirmed by the key's
+`spend_usd: 0`. Quota used 38 of 50.
 
-### Measured per-node usage from the run in A
-
-Model: `baidu/ernie-5.5-flash-preview:free`, served as requested. Search:
-fixture corpus. Total 4 calls, 19,768 tokens, **$0.000000**.
-
-| Node | tokens in | tokens out | latency |
+| # | Criterion | Status | Evidence |
 |---|---|---|---|
-| `plan` | 121 | 1,407 | 7.9 s |
-| `analyse` | 854 | 8,902 | 35.0 s |
-| `citation_check` | 1,181 | 3,022 | 10.4 s |
-| `draft` | 566 | 3,715 | 16.9 s |
+| A | End-to-end live workflow | **PASSED** | Batch 1, 89.6 s. Task reached `awaiting_approval` through the real arq handler; report v1 (9,086 chars) with claims and evidence links. |
+| B | Strict structured-output validation | **PASSED** | Batch 3. Schema-valid output and `output_mode=json_schema` confirmed; never downgraded. |
+| C | Per-node model selection reaches the provider | **PASSED** | Batch 3. An override changed which model the gateway served. |
+| D | Cross-vendor fallback | **PASSED** | Batch 3. Unreachable primary fell through to a working model on another vendor. |
+| E | Budget exhaustion leaves no report | **PASSED** | Batch 3. A 2-call budget aborted the workflow with no report written. |
+| F | Invalid model refused at startup | **PASSED** | Batch 3. Catalogue validation refused a non-existent model before any task ran. |
+| G | Unreachable gateway reported, not hung | **PASSED** | Batch 3. Normalised to a domain error rather than hanging. |
+| H | Bad credential is terminal, not retried | **PASSED** | Batch 3. A 401 was not retried. |
+| I+J | Injection containment across two **distinct providers** | **PASSED** | Batch 2, 428.9 s. Two full workflows, one per vendor; the test asserts the providers that actually served them are disjoint. |
+| K | No M1/M2 regression | **PASSED** | 302 offline tests pass. |
 
-**Caveat on this row.** These figures were read from the database at the time
-and are reproduced from that output. The rows themselves no longer exist: the
-live run had written into the shared test database, which was then truncated
-before a later run. That is why live runs now use a dedicated
-`agentflow_live` database and why `scripts/export_live_evidence.py` writes
-evidence to a committed file after each batch.
+### Providers actually verified
 
-**Finding worth carrying into any paid run.** Output tokens were roughly six
-times the pre-run estimate (≈17k against ≈3k budgeted). This model is verbose.
-On the paid profile that would imply ≈$0.18 per run rather than the ≈$0.018
-estimated from catalogue pricing — a figure that must be re-measured, not
-carried over, if the paid profile is ever enabled.
+Vendor diversity was confirmed from the gateway's reported serving provider,
+not inferred from model ids — a new `llm_calls.provider_served` column exists
+for exactly this, because two model ids can be hosted by one company and a
+meta-router can route both to the same backend.
 
----
+| Provider | Model | Live calls |
+|---|---|---|
+| `Baidu` | `baidu/ernie-5.5-flash-preview:free` | 22 |
+| `Ant Digital` | `inclusionai/ling-3.2-flash:free` | 6 |
+| `AtlasCloud` | `dots-studio/dots-3-note-preview:free` | 2 |
+
+The injection comparison used **Baidu** and **Ant Digital**.
+`openrouter/free` was *not* used as a vendor: it routed to
+`baidu/ernie-5.5-flash-preview:free`, so counting it would have been a
+meta-router masquerading as a second vendor.
+
+### Two vendor-2 candidates failed before one worked
+
+Recorded because the failures are findings about free endpoints, not defects:
+
+- **`dots-studio/dots-3-note-preview:free` (AtlasCloud)** — HTTP 400 *"bad
+  request"* on the `citation_check` node, the largest prompt and biggest
+  schema. `plan` and `analyse` succeeded first. Correctly classified
+  non-retryable, so the node failed rather than hammering the provider.
+- **`inclusionai/ling-3.2-flash:free` (Ant Digital)** — first attempt
+  exceeded a 600 s test budget. Measured 43 s for a 61-token prompt. It
+  passed on a second attempt once the per-test budget was raised to 2400 s;
+  the full two-vendor comparison took 428.9 s.
+
+### Measured per-node usage across all 30 live calls
+
+| Node | calls | avg tokens in | avg tokens out | avg latency |
+|---|---|---|---|---|
+| `plan` | 9 | 119 | 1,194 | 34.2 s |
+| `analyse` | 9 | 995 | 6,163 | 35.1 s |
+| `citation_check` | 6 | 1,593 | 8,418 | 56.8 s |
+| `draft` | 6 | 755 | 2,460 | 14.3 s |
+
+Totals: 9 tasks, 30 calls, 24,111 input and 131,480 output tokens, **$0.00**.
+Full per-call records are in `m3-live-evidence.json`.
+
+### The cost estimate was wrong, and by how much
+
+Output averaged **4,383 tokens per call** — a four-call workflow is ≈17.5k
+output tokens, against the 3k budgeted from catalogue pricing. On the shipped
+paid profile that implies **≈$0.18 per run, not ≈$0.018**: an order of
+magnitude higher.
+
+The cause is verbosity, not prompt size: input matched the estimate closely.
+Whether a paid model is equally verbose is **unknown and must be measured, not
+assumed** — this figure is evidence about free preview models. The estimate in
+`model-configuration.md` is labelled accordingly.
 
 ## Batch plan
 

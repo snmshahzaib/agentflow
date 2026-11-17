@@ -35,7 +35,7 @@ scripts/restart-recovery-test.sh     # worker restart recovery, real Docker
 | Backend unit (`-m "not integration"`) | 190 | pass in 5.1 s |
 | Backend integration (Postgres + Redis) | 108 | pass in 22.3 s |
 | **Backend total (offline)** | **298** | **pass** |
-| Live provider (`-m live`) | 11 | see the acceptance ledger — partially blocked by free-tier quota |
+| Live provider (`-m live`) | 10 | **all pass** against the free profile, $0.00 spend |
 | Frontend (Vitest) | 17 | pass |
 | ESLint (`--max-warnings 0`) / `tsc -b` | — | clean |
 | Frontend production build | — | succeeds |
@@ -235,13 +235,13 @@ a free tier at all.
 
 - **No browser-level end-to-end test yet.** Planned for M5 (one Playwright
   happy path), once there is a full UI to drive.
-- **The live provider path is only partially verified.** A full workflow has
-  run against a real free-tier model and strict structured output is confirmed
-  on three of them, but most live acceptance criteria are still blocked by the
-  50-requests-per-day quota. See the acceptance ledger.
-- **Nothing is verified against the shipped paid profile.** Live evidence so
-  far concerns free preview models, which are materially weaker. It is not
-  evidence about `anthropic/claude-sonnet-5`.
+- **Nothing is verified against the shipped paid profile.** All live evidence
+  concerns free preview models, which are materially weaker and measurably
+  more verbose. It is not evidence about `anthropic/claude-sonnet-5`, and the
+  paid cost estimate extrapolated from it is explicitly unverified.
+- **Cost reconciliation is unexercised.** Every free call records `$0.0` for
+  both our estimate and the gateway's reported figure, which is correct but
+  never tests reconciling a real charge.
 - **Injection tests prove containment, not prevention.** Whether a model obeys
   an injected instruction is not measured here and is not claimed anywhere.
 - **The orphan sweep's timing is not tested end-to-end in CI.** Its logic is
