@@ -171,6 +171,43 @@ jobs:
 
       - name: Audit JavaScript dependencies
         working-directory: frontend
-        # moderate, not high: a moderate advisory in a devDependency is still
-        # worth surfacing, and this job is advisory so it cannot block work.
-        run: pnpm install --frozen-lockfile && pnpm audit --audit-level moderate
+        # pnpm 9.1 has no advisory-ignore mechanism, so filtering happens
+        # here. KNOWN_UNFIXABLE holds advisories with no published fix; any
+        # other finding fails this step, so a new advisory still surfaces
+        # rather than hiding behind a permanently red job. Each entry needs a
+        # justification in docs/security.md and goes as soon as a fix ships.
+        env:
+          # GHSA-fc5q-39xc-vjpf: picomatch ReDoS. The advisory covers <=4.0.7
+          # and 4.0.7 is the latest published release, so no fix exists. Build
+          # tooling only (vite, tailwind); never reaches the browser bundle.
+          KNOWN_UNFIXABLE: GHSA-fc5q-39xc-vjpf
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm audit --json > audit.json || true
+          python3 - <<'AUDIT'
+          import json, os, sys
+          known = {s for s in os.environ.get("KNOWN_UNFIXABLE", "").split(",") if s}
+          try:
+              advisories = (json.load(open("audit.json")).get("advisories") or {}).values()
+          except Exception as exc:
+              print(f"could not parse audit output: {exc}")
+              sys.exit(1)
+          unexpected = []
+          for a in advisories:
+              ids = {str(a.get("github_advisory_id") or "")} | {
+                  str(c) for c in (a.get("cves") or [])
+              }
+              label = f"{a.get('module_name')} ({a.get('severity')}): {a.get('title')}"
+              if ids & known:
+                  print(f"known, unfixable: {label}")
+              else:
+                  unexpected.append(f"{sorted(i for i in ids if i)} {label}")
+          if unexpected:
+              print()
+              print("new advisories:")
+              for u in unexpected:
+                  print(f"  {u}")
+              sys.exit(1)
+          print()
+          print("no unexpected advisories")
+          AUDIT

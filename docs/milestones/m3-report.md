@@ -51,7 +51,10 @@ No criterion is outstanding. No test was skipped for quota in the final runs.
 **Offline suite:** 302 tests pass (194 unit, 108 integration). ruff, mypy
 across 64 files, 4 import-linter contracts, ESLint, `tsc -b`, 17 frontend
 tests — all clean. gitleaks clean across tree, staged set and full history.
-pip-audit and pnpm audit report no known vulnerabilities.
+pip-audit reports no known vulnerabilities. `pnpm audit` reports one high
+advisory with **no published fix** — picomatch ReDoS, build tooling only — now
+recorded as a documented exception in `docs/security.md`, with CI failing on
+any advisory not on that list.
 
 ---
 
