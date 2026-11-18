@@ -13,7 +13,12 @@ WORKDIR /app
 
 # Lockfile-only layer, so a source change does not reinstall dependencies.
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+# --ignore-scripts: this image only needs tsc and vite. Playwright's
+# postinstall would otherwise download a browser bundle into a production
+# image that will never run a test -- slow, large, and a build that fails on
+# a flaky download for no benefit.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
 COPY . .
 # Empty base URL: the bundle calls /api on its own origin, which nginx proxies.

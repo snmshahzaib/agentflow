@@ -97,9 +97,14 @@ export const api = {
 
   getSources: (id: string) => request<SourceView[]>(`/api/tasks/${id}/sources`),
 
-  getClaims: (id: string) => request<ClaimView[]>(`/api/tasks/${id}/claims`),
+  // `version` reads a specific report round. The backend has always accepted
+  // it; the UI now uses it so a reviewer can read what an earlier version
+  // said rather than only the newest one.
+  getClaims: (id: string, version?: number) =>
+    request<ClaimView[]>(`/api/tasks/${id}/claims${version ? `?version=${version}` : ''}`),
 
-  getReport: (id: string) => request<ReportView>(`/api/tasks/${id}/report`),
+  getReport: (id: string, version?: number) =>
+    request<ReportView>(`/api/tasks/${id}/report${version ? `?version=${version}` : ''}`),
 
   requestRevision: (id: string, feedback: string) =>
     request<{ task_id: string; status: string; report_version: number }>(

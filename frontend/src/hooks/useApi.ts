@@ -7,7 +7,7 @@
  * idle tab is not making requests forever.
  */
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { QueryClient } from '@tanstack/react-query'
 
 import { api } from '@/services/api'
@@ -24,6 +24,23 @@ export const queryKeys = {
 
 function pollWhileActive(status: TaskStatus | undefined): number | false {
   return status && ACTIVE_STATUSES.includes(status) ? POLL_INTERVAL_MS : false
+}
+
+/**
+ * The task's status is part of the key for everything that hangs off a task.
+ *
+ * This is load-bearing, not incidental. Polling stops the moment a task
+ * leaves `running`, so without the status in the key the last poll before the
+ * transition is the final word -- and that poll happens *before* the steps,
+ * sources, claims and report exist. A completed task rendered an empty
+ * timeline and "No report yet", which is what a browser test caught. Keying
+ * on status means arriving at the approval gate is itself a refetch.
+ *
+ * `keepPreviousData` stops the key change from flashing a loading state over
+ * data that is already on screen.
+ */
+function taskScopedKey(name: string, id: string | undefined, status: TaskStatus | undefined) {
+  return [name, id ?? '', status ?? 'unknown'] as const
 }
 
 export function useMeta() {
@@ -57,40 +74,52 @@ export function useTask(id: string | undefined) {
 
 export function useSteps(id: string | undefined, status: TaskStatus | undefined) {
   return useQuery({
-    queryKey: queryKeys.steps(id ?? ''),
+    queryKey: taskScopedKey('steps', id, status),
     queryFn: () => api.getSteps(id!),
     enabled: Boolean(id),
+    placeholderData: keepPreviousData,
     refetchInterval: () => pollWhileActive(status),
   })
 }
 
 export function useSources(id: string | undefined, status: TaskStatus | undefined) {
   return useQuery({
-    queryKey: ['sources', id ?? ''],
+    queryKey: taskScopedKey('sources', id, status),
     queryFn: () => api.getSources(id!),
     enabled: Boolean(id),
+    placeholderData: keepPreviousData,
     refetchInterval: () => pollWhileActive(status),
   })
 }
 
-export function useClaims(id: string | undefined, status: TaskStatus | undefined) {
+export function useClaims(
+  id: string | undefined,
+  status: TaskStatus | undefined,
+  version?: number,
+) {
   return useQuery({
-    queryKey: ['claims', id ?? ''],
-    queryFn: () => api.getClaims(id!),
+    queryKey: [...taskScopedKey('claims', id, status), version ?? 'latest'],
+    queryFn: () => api.getClaims(id!, version),
     enabled: Boolean(id),
     // A missing report is expected before the draft node runs, so a 404 here
     // is a normal state rather than an error worth retrying.
     retry: false,
+    placeholderData: keepPreviousData,
     refetchInterval: () => pollWhileActive(status),
   })
 }
 
-export function useReport(id: string | undefined, status: TaskStatus | undefined) {
+export function useReport(
+  id: string | undefined,
+  status: TaskStatus | undefined,
+  version?: number,
+) {
   return useQuery({
-    queryKey: ['report', id ?? ''],
-    queryFn: () => api.getReport(id!),
+    queryKey: [...taskScopedKey('report', id, status), version ?? 'latest'],
+    queryFn: () => api.getReport(id!, version),
     enabled: Boolean(id),
     retry: false,
+    placeholderData: keepPreviousData,
     refetchInterval: () => pollWhileActive(status),
   })
 }

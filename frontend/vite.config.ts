@@ -24,5 +24,10 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
     css: false,
+    // Component tests only. The e2e directory is Playwright's: it drives a
+    // real browser against a running stack, and Vitest picking those files up
+    // fails with "Playwright Test did not expect test.describe()".
+    include: ['src/**/*.test.{ts,tsx}'],
+    exclude: ['e2e/**', 'node_modules/**', 'dist/**'],
   },
 })
