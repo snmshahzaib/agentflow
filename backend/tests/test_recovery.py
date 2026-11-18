@@ -84,6 +84,9 @@ async def worker_ctx(
             "redis": RecordingRedis(redis),
             "session_factory": node_deps.session_factory,
             "node_deps": node_deps,
+            # The worker always builds both; a task admitted to the
+            # offline profile must run there even on a live deployment.
+            "offline_deps": node_deps,
             "checkpointer": checkpointer,
             "settings": node_deps.settings,
         }
@@ -196,6 +199,9 @@ class TestRestartRecovery:
                 "redis": redis,
                 "session_factory": node_deps.session_factory,
                 "node_deps": node_deps,
+                # The worker always builds both; a task admitted to the
+                # offline profile must run there even on a live deployment.
+                "offline_deps": node_deps,
                 "checkpointer": fresh_checkpointer,
                 "settings": node_deps.settings,
             }
@@ -223,6 +229,9 @@ class TestRestartRecovery:
                 "redis": redis,
                 "session_factory": node_deps.session_factory,
                 "node_deps": node_deps,
+                # The worker always builds both; a task admitted to the
+                # offline profile must run there even on a live deployment.
+                "offline_deps": node_deps,
                 "checkpointer": fresh_checkpointer,
                 "settings": node_deps.settings,
             }

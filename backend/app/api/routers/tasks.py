@@ -40,7 +40,10 @@ _ERRORS: dict[int | str, dict[str, object]] = {
     422: {"model": ErrorResponse, "description": "The request was not valid."},
     429: {
         "model": ErrorResponse,
-        "description": "Rate limit exceeded; see the Retry-After header.",
+        "description": (
+            "Rate limit, per-session task limit, or a daily demo ceiling. "
+            "Rate-limit refusals carry a Retry-After header."
+        ),
     },
 }
 
@@ -66,6 +69,19 @@ async def create_task(
             max_length=128,
         ),
     ] = None,
+    access_code: Annotated[
+        str | None,
+        Header(
+            alias="X-Access-Code",
+            description=(
+                "Unlocks live research on a deployment configured for it. Without a valid "
+                "code the task runs on the deterministic offline profile, which is the "
+                "public demo. A header rather than a body field so it does not land in "
+                "request-body logs or browser history."
+            ),
+            max_length=256,
+        ),
+    ] = None,
 ) -> TaskDetail:
     """Create a task and queue it. Returns 202: the work has not run yet."""
     task = await service.create(
@@ -73,6 +89,7 @@ async def create_task(
         question=payload.question,
         constraints=payload.constraints,
         idempotency_key=idempotency_key,
+        access_code=access_code,
     )
     response.headers["Location"] = f"/api/tasks/{task.id}"
     return TaskDetail.model_validate(task)

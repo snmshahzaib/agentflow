@@ -18,10 +18,13 @@ from arq.connections import RedisSettings
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.adapters.llm.registry import build_llm_runtime
+from app.adapters.llm.stub import StubLLMClient
+from app.adapters.search.fixture import FixtureSearchProvider
 from app.adapters.search.registry import build_search_provider
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.db.session import dispose_engine, get_session_factory, init_engine
+from app.domain.enums import LLMProvider, SearchMode
 from app.graph.deps import NodeDeps
 from app.workers.jobs import (
     purge_expired_tasks,
@@ -60,6 +63,18 @@ async def startup(ctx: dict[str, Any]) -> None:
         session_factory=session_factory,
         llm=runtime.client,
         search=search,
+    )
+    # The offline profile is always available, whatever this deployment is
+    # configured for. A task admitted without an access code is recorded as
+    # stub/fixture and must run that way even on a live deployment -- so the
+    # worker honours the row rather than re-reading configuration.
+    ctx["offline_deps"] = NodeDeps(
+        settings=settings.model_copy(
+            update={"llm_provider": LLMProvider.STUB, "search_provider": SearchMode.FIXTURE}
+        ),
+        session_factory=session_factory,
+        llm=StubLLMClient(),
+        search=FixtureSearchProvider(),
     )
 
     log.info(

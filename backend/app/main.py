@@ -92,7 +92,7 @@ def create_app() -> FastAPI:
         allow_origins=settings.cors_origins,
         allow_credentials=True,  # the session cookie must survive the hop
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type", "Idempotency-Key", "X-Correlation-ID"],
+        allow_headers=["Content-Type", "Idempotency-Key", "X-Correlation-ID", "X-Access-Code"],
         expose_headers=["X-Correlation-ID", "Location"],
     )
 

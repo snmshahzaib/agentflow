@@ -111,6 +111,45 @@ class DemoBudgetExceededError(RateLimitedError):
     message = "The daily demo budget has been spent."
 
 
+class DemoTaskLimitError(RateLimitedError):
+    """The deployment-wide daily task ceiling is reached."""
+
+    code = "demo_daily_task_limit"
+    message = "The demo has reached its daily task limit."
+
+
+class SessionTaskLimitError(RateLimitedError):
+    """One visitor has opened more tasks than a shared demo allows."""
+
+    code = "session_task_limit"
+    message = "This session has reached its task limit."
+
+
+class QueueUnavailableError(AgentFlowError):
+    """The work queue could not be reached.
+
+    Raised rather than allowed to surface as an unhandled error, because the
+    difference matters to a caller: a 503 says "the system is degraded, retry
+    later", while a 500 says "we have a bug". It also keeps the broker's own
+    exception text -- which names hosts and ports -- out of the response.
+    """
+
+    code = "queue_unavailable"
+    message = "The work queue is unavailable. The task was not started; please retry."
+
+
+class AccessDeniedError(AgentFlowError):
+    """A gated capability was requested without the right credential.
+
+    Deliberately *not* a 401: there is no identity to authenticate here and no
+    login to redirect to. It is a refusal to perform a privileged action, and
+    the message never says whether a code was wrong or merely absent.
+    """
+
+    code = "access_denied"
+    message = "Live research is not available without an access code."
+
+
 # --- outbound adapters ---------------------------------------------------
 
 

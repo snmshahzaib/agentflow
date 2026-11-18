@@ -21,6 +21,7 @@ from app.domain.errors import (
     ConfigurationError,
     ConflictError,
     NotFoundError,
+    QueueUnavailableError,
     RateLimitedError,
     ValidationError,
 )
@@ -37,6 +38,7 @@ _STATUS_BY_ERROR: list[tuple[type[AgentFlowError], int]] = [
     (RateLimitedError, status.HTTP_429_TOO_MANY_REQUESTS),
     (BudgetExhaustedError, status.HTTP_409_CONFLICT),
     (ConfigurationError, status.HTTP_503_SERVICE_UNAVAILABLE),
+    (QueueUnavailableError, status.HTTP_503_SERVICE_UNAVAILABLE),
 ]
 
 

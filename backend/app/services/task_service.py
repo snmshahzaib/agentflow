@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import binascii
 import uuid
+from collections.abc import Awaitable
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select, tuple_
@@ -28,7 +29,14 @@ from app.db.models import (
     WorkflowStep,
 )
 from app.domain.enums import ApprovalAction, ReportStatus, TaskStatus
-from app.domain.errors import ApprovalRequiredError, ConflictError, NotFoundError, ValidationError
+from app.domain.errors import (
+    ApprovalRequiredError,
+    ConflictError,
+    NotFoundError,
+    QueueUnavailableError,
+    ValidationError,
+)
+from app.services.admission import AdmissionService
 
 log = get_logger(__name__)
 
@@ -60,6 +68,19 @@ class TaskService:
 
     # -- commands --------------------------------------------------------
 
+    @staticmethod
+    async def _enqueue(awaitable: Awaitable[None]) -> None:
+        """Run a queue operation, turning a broker outage into a domain error.
+
+        Everything in the surrounding unit of work rolls back, so a failed
+        enqueue leaves no task row that nothing will ever pick up.
+        """
+        try:
+            await awaitable
+        except Exception as exc:
+            log.error("queue_unavailable", error=type(exc).__name__)
+            raise QueueUnavailableError() from exc
+
     async def create(
         self,
         *,
@@ -67,6 +88,7 @@ class TaskService:
         question: str,
         constraints: dict[str, object] | None = None,
         idempotency_key: str | None = None,
+        access_code: str | None = None,
     ) -> ResearchTask:
         """Create a task and queue it.
 
@@ -74,6 +96,13 @@ class TaskService:
         now, so a later configuration change cannot retroactively alter what a
         running task was permitted to spend, nor what a finished report claims
         produced it.
+
+        Admission runs **before** anything is written: daily ceilings, the
+        per-session limit, and whether this request may reach a live provider
+        at all. The providers it returns are recorded on the row, and the
+        worker honours that record rather than re-reading configuration --
+        so a task admitted to the offline profile stays there even if the
+        deployment is configured for live providers.
         """
         if idempotency_key:
             existing = await self._session.scalar(
@@ -90,14 +119,17 @@ class TaskService:
                 )
                 return existing
 
+        admission = AdmissionService(self._session, self._settings)
+        decision = await admission.admit(session_id=session_id, access_code=access_code)
+
         task = ResearchTask(
             session_id=session_id,
             idempotency_key=idempotency_key,
             question=question.strip(),
             constraints_json=dict(constraints or {}),
             status=TaskStatus.QUEUED,
-            search_mode=self._settings.search_provider,
-            llm_provider=self._settings.llm_provider,
+            search_mode=decision.search_mode,
+            llm_provider=decision.llm_provider,
             max_tokens_budget=self._settings.llm_max_tokens_per_task,
             max_calls_budget=self._settings.llm_max_calls_per_task,
         )
@@ -108,8 +140,16 @@ class TaskService:
         task.graph_thread_id = str(task.id)
         await self._session.flush()
 
-        await self._queue.enqueue_run(str(task.id))
-        log.info("task_created", task_id=str(task.id), status=task.status.value)
+        await admission.record_task_started()
+        await self._enqueue(self._queue.enqueue_run(str(task.id)))
+        log.info(
+            "task_created",
+            task_id=str(task.id),
+            status=task.status.value,
+            live=decision.live,
+            llm_provider=decision.llm_provider.value,
+            search_mode=decision.search_mode.value,
+        )
         return task
 
     async def approve(

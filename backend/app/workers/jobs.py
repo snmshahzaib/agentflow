@@ -17,8 +17,9 @@ from sqlalchemy import select
 from app.core.correlation import new_correlation_id, set_correlation_id, set_task_id
 from app.core.logging import get_logger
 from app.db.models import ResearchTask
-from app.domain.enums import TaskStatus
+from app.domain.enums import LLMProvider, TaskStatus
 from app.graph.builder import build_graph
+from app.services.admission import AdmissionService
 from app.services.task_service import purge_tasks_older_than
 from app.workers.locks import is_locked, single_flight
 
@@ -34,6 +35,19 @@ LOCK_HEARTBEAT_SECONDS = 60
 #: A task must look stalled for at least this long before the sweep adopts it,
 #: so a task between enqueue and claim is never stolen from a healthy worker.
 ORPHAN_GRACE_SECONDS = 120
+
+
+def _deps_for_task(ctx: dict[str, Any], llm_provider: LLMProvider) -> Any:
+    """The providers the task was *admitted* with, not the ones configured now.
+
+    A task admitted without an access code is recorded as stub/fixture, and
+    must run that way even though the deployment has live credentials sitting
+    right there. Reading the row rather than the configuration is what makes
+    the access gate a control instead of a suggestion.
+    """
+    if llm_provider is LLMProvider.STUB:
+        return ctx["offline_deps"]
+    return ctx["node_deps"]
 
 
 async def _set_status(ctx: dict[str, Any], task_id: str, **changes: Any) -> None:
@@ -65,8 +79,28 @@ async def _settle_status(
     # The graph has finished. Approval is recorded by the API before the
     # resume is enqueued, so the status is already correct and must not be
     # overwritten here.
+    await _record_spend(ctx, task_id)
     log.info("task_graph_complete", task_id=task_id)
     return "complete"
+
+
+async def _record_spend(ctx: dict[str, Any], task_id: str) -> None:
+    """Add a finished task's cost to the deployment's daily total.
+
+    Recorded at the end rather than per call: the ceiling is checked at
+    admission, so what matters is that the day's total reflects completed
+    work before the next admission decision reads it.
+    """
+    factory = ctx["session_factory"]
+    async with factory() as session, session.begin():
+        task = await session.get(ResearchTask, uuid.UUID(task_id))
+        if task is None:
+            return
+        cost = float(task.cost_usd_estimate or 0)
+        if cost <= 0:
+            return
+        await AdmissionService(session, ctx["settings"]).record_spend(cost)
+        log.info("demo_spend_recorded", task_id=task_id, cost_usd=cost)
 
 
 async def run_task(ctx: dict[str, Any], task_id: str) -> str:
@@ -101,10 +135,11 @@ async def run_task(ctx: dict[str, Any], task_id: str) -> str:
                 return str(task.status.value)
             question = task.question
             constraints = dict(task.constraints_json)
+            llm_provider = task.llm_provider
 
         await _set_status(ctx, task_id, status=TaskStatus.RUNNING)
 
-        graph = build_graph(ctx["node_deps"], checkpointer=ctx["checkpointer"])
+        graph = build_graph(_deps_for_task(ctx, llm_provider), checkpointer=ctx["checkpointer"])
         config = {"configurable": {"thread_id": task_id}}
 
         try:
@@ -141,7 +176,15 @@ async def resume_task(ctx: dict[str, Any], task_id: str, decision: dict[str, Any
             log.info("task_already_running", task_id=task_id)
             return "locked"
 
-        graph = build_graph(ctx["node_deps"], checkpointer=ctx["checkpointer"])
+        factory = ctx["session_factory"]
+        async with factory() as session:
+            task = await session.get(ResearchTask, uuid.UUID(task_id))
+            if task is None:
+                log.warning("task_missing_on_resume", task_id=task_id)
+                return "missing"
+            llm_provider = task.llm_provider
+
+        graph = build_graph(_deps_for_task(ctx, llm_provider), checkpointer=ctx["checkpointer"])
         config = {"configurable": {"thread_id": task_id}}
 
         try:

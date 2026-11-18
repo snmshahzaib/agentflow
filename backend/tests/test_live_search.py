@@ -312,6 +312,9 @@ class TestLiveResearchLifecycle:
                 "redis": redis,
                 "session_factory": deps.session_factory,
                 "node_deps": deps,
+                # The worker always builds both; a task admitted to the
+                # offline profile must run there even on a live deployment.
+                "offline_deps": deps,
                 "checkpointer": checkpointer,
                 "settings": deps.settings,
             }

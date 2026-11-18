@@ -116,13 +116,21 @@ class Settings(BaseSettings):
     node_timeout_seconds: Annotated[float, Field(gt=0)] = 120.0
 
     # --- demo safety ----------------------------------------------------
-    #: NOT ENFORCED. Declared for the public deployment that does not exist
-    #: yet; nothing reads these three. They are kept rather than deleted so
-    #: the deployment work has a settled name and default to wire up, and they
-    #: are listed as unimplemented in docs/security.md so nobody mistakes
-    #: setting one for a control. Implement or remove before going public.
+    #: Enforced at admission (app.services.admission), before a task row is
+    #: written or a job is queued.
+    #:
+    #: The daily ceilings are deployment-wide, counted per UTC day in the
+    #: `demo_budget` table. The spend ceiling uses the ledger's own estimate,
+    #: so it bounds what the deployment can cost rather than what it intended
+    #: to cost.
     demo_daily_budget_usd: Annotated[float, Field(ge=0)] = 2.0
+    demo_daily_task_limit: Annotated[int, Field(ge=1)] = 100
     demo_max_tasks_per_session: Annotated[int, Field(ge=1)] = 5
+
+    #: Gates **live** research. Unset, a deployment configured with live
+    #: providers still serves every anonymous visitor the deterministic
+    #: offline profile; a task is only allowed to reach a real provider when
+    #: the request carries this code. Public demos must set it.
     demo_access_code: SecretStr | None = None
 
     #: Enforced on write endpoints, keyed by session. See ADR-017.
