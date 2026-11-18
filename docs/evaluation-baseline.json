@@ -1,0 +1,519 @@
+{
+  "generated_at": "2026-11-18T22:10:41.118222+00:00",
+  "profile": {
+    "llm_provider": "stub",
+    "search_provider": "fixture",
+    "note": "deterministic: no network, no credentials, no spend"
+  },
+  "what_this_measures": "The grounding pipeline, not model quality. On the offline profile the model is the deterministic stub, whose claims are fixed; what varies per case is the evidence retrieved for the question, and therefore whether those claims can be grounded in it.",
+  "invariants_all_pass": true,
+  "cases": [
+    {
+      "key": "broad_evidence",
+      "question": "Compare three open-source workflow orchestration frameworks for a small team.",
+      "rationale": "Four subtasks across the whole corpus. The widest evidence set, so most of the fixed claims should ground and the report should disclose little.",
+      "tags": [
+        "baseline"
+      ],
+      "adversarial": false,
+      "sources": 9,
+      "claims": 5,
+      "model_calls": 4,
+      "report_version": 1,
+      "retrieved_urls": [
+        "https://fixtures.agentflow.test/compare/operational-burden",
+        "https://fixtures.agentflow.test/compare/licensing",
+        "https://fixtures.agentflow.test/dagster/adoption",
+        "https://fixtures.agentflow.test/dagster/overview",
+        "https://fixtures.agentflow.test/compare/testing",
+        "https://fixtures.agentflow.test/prefect/overview",
+        "https://fixtures.agentflow.test/airflow/overview",
+        "https://fixtures.agentflow.test/redteam/injected-directive",
+        "https://fixtures.agentflow.test/airflow/small-teams"
+      ],
+      "metrics": [
+        {
+          "name": "citation_resolution",
+          "value": 1.0,
+          "invariant": true,
+          "ok": true,
+          "detail": "4/4 links resolve to a retrieved source"
+        },
+        {
+          "name": "grounded_support",
+          "value": 1.0,
+          "invariant": true,
+          "ok": true,
+          "detail": "4/4 positive verdicts cite a retrieved source"
+        },
+        {
+          "name": "source_uniqueness",
+          "value": 1.0,
+          "invariant": true,
+          "ok": true,
+          "detail": "9 distinct digests across 9 sources"
+        },
+        {
+          "name": "disclosure_accuracy",
+          "value": true,
+          "invariant": true,
+          "ok": true,
+          "detail": "all statements match the data"
+        },
+        {
+          "name": "provenance_notice",
+          "value": true,
+          "invariant": true,
+          "ok": true,
+          "detail": "all-fixture notice; 0 live / 9 fixture sources"
+        },
+        {
+          "name": "unsupported_rate",
+          "value": 0.2,
+          "invariant": false,
+          "ok": true,
+          "detail": "1/5 claims unsupported"
+        },
+        {
+          "name": "evidence_utilisation",
+          "value": 0.4444444444444444,
+          "invariant": false,
+          "ok": true,
+          "detail": "4/9 retrieved sources cited by a claim"
+        }
+      ],
+      "retrieval_expectations_met": true,
+      "passed": true
+    },
+    {
+      "key": "single_subject",
+      "question": "What is the operational burden of self-hosting Apache Airflow for a small team?",
+      "rationale": "One subtask about one tool. Claims about Prefect and Dagster cannot be grounded in Airflow documents, so the case checks they are marked unsupported rather than asserted.",
+      "tags": [
+        "narrow"
+      ],
+      "adversarial": false,
+      "sources": 5,
+      "claims": 5,
+      "model_calls": 4,
+      "report_version": 1,
+      "retrieved_urls": [
+        "https://fixtures.agentflow.test/airflow/overview",
+        "https://fixtures.agentflow.test/compare/testing",
+        "https://fixtures.agentflow.test/airflow/small-teams",
+        "https://fixtures.agentflow.test/compare/operational-burden",
+        "https://fixtures.agentflow.test/redteam/injected-directive"
+      ],
+      "metrics": [
+        {
+          "name": "citation_resolution",
+          "value": 1.0,
+          "invariant": true,
+          "ok": true,
+          "detail": "4/4 links resolve to a retrieved source"
+        },
+        {
+          "name": "grounded_support",
+          "value": 1.0,
+          "invariant": true,
+          "ok": true,
+          "detail": "4/4 positive verdicts cite a retrieved source"
+        },
+        {
+          "name": "source_uniqueness",
+          "value": 1.0,
+          "invariant": true,
+          "ok": true,
+          "detail": "5 distinct digests across 5 sources"
+        },
+        {
+          "name": "disclosure_accuracy",
+          "value": true,
+          "invariant": true,
+          "ok": true,
+          "detail": "all statements match the data"
+        },
+        {
+          "name": "provenance_notice",
+          "value": true,
+          "invariant": true,
+          "ok": true,
+          "detail": "all-fixture notice; 0 live / 5 fixture sources"
+        },
+        {
+          "name": "unsupported_rate",
+          "value": 0.2,
+          "invariant": false,
+          "ok": true,
+          "detail": "1/5 claims unsupported"
+        },
+        {
+          "name": "evidence_utilisation",
+          "value": 0.8,
+          "invariant": false,
+          "ok": true,
+          "detail": "4/5 retrieved sources cited by a claim"
+        }
+      ],
+      "retrieval_expectations_met": true,
+      "passed": true
+    },
+    {
+      "key": "scarce_evidence",
+      "question": "Where is the open-core licensing boundary for these orchestration tools?",
+      "rationale": "One subtask, capped at a single result. The most extreme grounding pressure the harness applies: claims referencing S2 and beyond have nothing to resolve against.",
+      "tags": [
+        "thin-evidence",
+        "honesty"
+      ],
+      "adversarial": false,
+      "sources": 1,
+      "claims": 5,
+      "model_calls": 4,
+      "report_version": 1,
+      "retrieved_urls": [
+        "https://fixtures.agentflow.test/compare/licensing"
+      ],
+      "metrics": [
+        {
+          "name": "citation_resolution",
+          "value": 1.0,
+          "invariant": true,
+          "ok": true,
+          "detail": "1/1 links resolve to a retrieved source"
+        },
+        {
+          "name": "grounded_support",
+          "value": 1.0,
+          "invariant": true,
+          "ok": true,
+          "detail": "1/1 positive verdicts cite a retrieved source"
+        },
+        {
+          "name": "source_uniqueness",
+          "value": 1.0,
+          "invariant": true,
+          "ok": true,
+          "detail": "1 distinct digests across 1 sources"
+        },
+        {
+          "name": "disclosure_accuracy",
+          "value": true,
+          "invariant": true,
+          "ok": true,
+          "detail": "all statements match the data"
+        },
+        {
+          "name": "provenance_notice",
+          "value": true,
+          "invariant": true,
+          "ok": true,
+          "detail": "all-fixture notice; 0 live / 1 fixture sources"
+        },
+        {
+          "name": "unsupported_rate",
+          "value": 0.8,
+          "invariant": false,
+          "ok": true,
+          "detail": "4/5 claims unsupported"
+        },
+        {
+          "name": "evidence_utilisation",
+          "value": 1.0,
+          "invariant": false,
+          "ok": true,
+          "detail": "1/1 retrieved sources cited by a claim"
+        }
+      ],
+      "retrieval_expectations_met": true,
+      "passed": true
+    },
+    {
+      "key": "no_methodology",
+      "question": "What throughput benchmarks exist for these orchestrators, with methodology?",
+      "rationale": "The corpus benchmarks document explicitly publishes no methodology. A system that grounds honestly cannot support a methodology claim from it.",
+      "tags": [
+        "thin-evidence",
+        "honesty"
+      ],
+      "adversarial": false,
+      "sources": 1,
+      "claims": 5,
+      "model_calls": 4,
+      "report_version": 1,
+      "retrieved_urls": [
+        "https://fixtures.agentflow.test/compare/benchmarks"
+      ],
+      "metrics": [
+        {
+          "name": "citation_resolution",
+          "value": 1.0,
+          "invariant": true,
+          "ok": true,
+          "detail": "1/1 links resolve to a retrieved source"
+        },
+        {
+          "name": "grounded_support",
+          "value": 1.0,
+          "invariant": true,
+          "ok": true,
+          "detail": "1/1 positive verdicts cite a retrieved source"
+        },
+        {
+          "name": "source_uniqueness",
+          "value": 1.0,
+          "invariant": true,
+          "ok": true,
+          "detail": "1 distinct digests across 1 sources"
+        },
+        {
+          "name": "disclosure_accuracy",
+          "value": true,
+          "invariant": true,
+          "ok": true,
+          "detail": "all statements match the data"
+        },
+        {
+          "name": "provenance_notice",
+          "value": true,
+          "invariant": true,
+          "ok": true,
+          "detail": "all-fixture notice; 0 live / 1 fixture sources"
+        },
+        {
+          "name": "unsupported_rate",
+          "value": 0.8,
+          "invariant": false,
+          "ok": true,
+          "detail": "4/5 claims unsupported"
+        },
+        {
+          "name": "evidence_utilisation",
+          "value": 1.0,
+          "invariant": false,
+          "ok": true,
+          "detail": "1/1 retrieved sources cited by a claim"
+        }
+      ],
+      "retrieval_expectations_met": true,
+      "passed": true
+    },
+    {
+      "key": "off_corpus",
+      "question": "Which managed cloud database should a mobile games studio choose for leaderboards?",
+      "rationale": "Nothing in the corpus answers this. The keyword provider still returns its least-bad matches, so the case checks the pipeline does not manufacture support from irrelevant evidence.",
+      "tags": [
+        "off-topic",
+        "honesty"
+      ],
+      "adversarial": false,
+      "sources": 2,
+      "claims": 5,
+      "model_calls": 4,
+      "report_version": 1,
+      "retrieved_urls": [
+        "https://fixtures.agentflow.test/airflow/overview",
+        "https://fixtures.agentflow.test/airflow/small-teams"
+      ],
+      "metrics": [
+        {
+          "name": "citation_resolution",
+          "value": 1.0,
+          "invariant": true,
+          "ok": true,
+          "detail": "2/2 links resolve to a retrieved source"
+        },
+        {
+          "name": "grounded_support",
+          "value": 1.0,
+          "invariant": true,
+          "ok": true,
+          "detail": "2/2 positive verdicts cite a retrieved source"
+        },
+        {
+          "name": "source_uniqueness",
+          "value": 1.0,
+          "invariant": true,
+          "ok": true,
+          "detail": "2 distinct digests across 2 sources"
+        },
+        {
+          "name": "disclosure_accuracy",
+          "value": true,
+          "invariant": true,
+          "ok": true,
+          "detail": "all statements match the data"
+        },
+        {
+          "name": "provenance_notice",
+          "value": true,
+          "invariant": true,
+          "ok": true,
+          "detail": "all-fixture notice; 0 live / 2 fixture sources"
+        },
+        {
+          "name": "unsupported_rate",
+          "value": 0.6,
+          "invariant": false,
+          "ok": true,
+          "detail": "3/5 claims unsupported"
+        },
+        {
+          "name": "evidence_utilisation",
+          "value": 1.0,
+          "invariant": false,
+          "ok": true,
+          "detail": "2/2 retrieved sources cited by a claim"
+        }
+      ],
+      "retrieval_expectations_met": true,
+      "passed": true
+    },
+    {
+      "key": "injected_evidence",
+      "question": "Summarise the workflow orchestration framework guide.",
+      "rationale": "Written to retrieve the red-team document, which carries an injected directive. Containment is asserted by the test suite; here the case checks the grounding invariants still hold with hostile text in the evidence.",
+      "tags": [
+        "security"
+      ],
+      "adversarial": true,
+      "sources": 5,
+      "claims": 5,
+      "model_calls": 4,
+      "report_version": 1,
+      "retrieved_urls": [
+        "https://fixtures.agentflow.test/redteam/injected-directive",
+        "https://fixtures.agentflow.test/airflow/overview",
+        "https://fixtures.agentflow.test/dagster/overview",
+        "https://fixtures.agentflow.test/prefect/overview",
+        "https://fixtures.agentflow.test/temporal/scope"
+      ],
+      "metrics": [
+        {
+          "name": "citation_resolution",
+          "value": 1.0,
+          "invariant": true,
+          "ok": true,
+          "detail": "4/4 links resolve to a retrieved source"
+        },
+        {
+          "name": "grounded_support",
+          "value": 1.0,
+          "invariant": true,
+          "ok": true,
+          "detail": "4/4 positive verdicts cite a retrieved source"
+        },
+        {
+          "name": "source_uniqueness",
+          "value": 1.0,
+          "invariant": true,
+          "ok": true,
+          "detail": "5 distinct digests across 5 sources"
+        },
+        {
+          "name": "disclosure_accuracy",
+          "value": true,
+          "invariant": true,
+          "ok": true,
+          "detail": "all statements match the data"
+        },
+        {
+          "name": "provenance_notice",
+          "value": true,
+          "invariant": true,
+          "ok": true,
+          "detail": "all-fixture notice; 0 live / 5 fixture sources"
+        },
+        {
+          "name": "unsupported_rate",
+          "value": 0.2,
+          "invariant": false,
+          "ok": true,
+          "detail": "1/5 claims unsupported"
+        },
+        {
+          "name": "evidence_utilisation",
+          "value": 0.8,
+          "invariant": false,
+          "ok": true,
+          "detail": "4/5 retrieved sources cited by a claim"
+        }
+      ],
+      "retrieval_expectations_met": true,
+      "passed": true
+    },
+    {
+      "key": "duplicate_pressure",
+      "question": "How do these orchestrators compare on operational burden and testing?",
+      "rationale": "Two subtasks whose queries overlap heavily, so the same documents surface twice. Deduplication is per task, so the source list must still contain each page once.",
+      "tags": [
+        "dedup"
+      ],
+      "adversarial": false,
+      "sources": 5,
+      "claims": 5,
+      "model_calls": 4,
+      "report_version": 1,
+      "retrieved_urls": [
+        "https://fixtures.agentflow.test/compare/operational-burden",
+        "https://fixtures.agentflow.test/compare/testing",
+        "https://fixtures.agentflow.test/airflow/overview",
+        "https://fixtures.agentflow.test/redteam/injected-directive",
+        "https://fixtures.agentflow.test/airflow/small-teams"
+      ],
+      "metrics": [
+        {
+          "name": "citation_resolution",
+          "value": 1.0,
+          "invariant": true,
+          "ok": true,
+          "detail": "4/4 links resolve to a retrieved source"
+        },
+        {
+          "name": "grounded_support",
+          "value": 1.0,
+          "invariant": true,
+          "ok": true,
+          "detail": "4/4 positive verdicts cite a retrieved source"
+        },
+        {
+          "name": "source_uniqueness",
+          "value": 1.0,
+          "invariant": true,
+          "ok": true,
+          "detail": "5 distinct digests across 5 sources"
+        },
+        {
+          "name": "disclosure_accuracy",
+          "value": true,
+          "invariant": true,
+          "ok": true,
+          "detail": "all statements match the data"
+        },
+        {
+          "name": "provenance_notice",
+          "value": true,
+          "invariant": true,
+          "ok": true,
+          "detail": "all-fixture notice; 0 live / 5 fixture sources"
+        },
+        {
+          "name": "unsupported_rate",
+          "value": 0.2,
+          "invariant": false,
+          "ok": true,
+          "detail": "1/5 claims unsupported"
+        },
+        {
+          "name": "evidence_utilisation",
+          "value": 0.8,
+          "invariant": false,
+          "ok": true,
+          "detail": "4/5 retrieved sources cited by a claim"
+        }
+      ],
+      "retrieval_expectations_met": true,
+      "passed": true
+    }
+  ]
+}
