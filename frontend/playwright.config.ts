@@ -20,6 +20,11 @@ const BASE_URL = process.env.E2E_BASE_URL ?? 'http://localhost:8080'
 
 export default defineConfig({
   testDir: './e2e',
+  // The capture file is a documentation tool that writes images, not a test.
+  // It has its own config (playwright.screenshots.config.ts) because every
+  // project in a config runs by default -- making it a project here would put
+  // image generation into every test run.
+  testIgnore: /\.capture\.ts$/,
   // The journey spec drives a real five-node workflow and polls for it. The
   // stub adapter makes each node fast, but the whole run is still seconds.
   timeout: 90_000,
@@ -60,14 +65,6 @@ export default defineConfig({
       name: 'firefox',
       use: { ...devices['Desktop Firefox'], viewport: { width: 1280, height: 860 } },
       testMatch: /journey\.spec\.ts/,
-    },
-    {
-      // Documentation screenshots, not tests. Run explicitly:
-      //   scripts/capture-screenshots.sh
-      // Kept out of the default run because it writes files into docs/.
-      name: 'screenshots',
-      use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 900 } },
-      testMatch: /\.capture\.ts$/,
     },
   ],
 })

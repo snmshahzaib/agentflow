@@ -16,7 +16,7 @@ scripts/e2e-stack.sh up
 
 printf '\n== capturing\n'
 cd frontend
-pnpm exec playwright test --project=screenshots
+pnpm exec playwright test --config=playwright.screenshots.config.ts
 
 printf '\n== written\n'
 ls -la "$ROOT/docs/screenshots" | tail -n +2 | awk '{printf "  %-28s %s\n", $9, $5}'
