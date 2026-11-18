@@ -28,6 +28,11 @@ change to this boundary needs the repository owner's approval.
 5. **Never document unimplemented behaviour as working.** The README status table and
    `docs/testing.md` must match reality.
 6. **One project at a time.** Do not touch the sibling portfolio projects.
+7. **Commits carry one author: the repository owner.** Use the repo-local Git identity
+   (`git config --local user.name/user.email`), never a global or inferred one. Do **not** add
+   `Co-Authored-By` trailers for assistants or tooling, and do not add "generated with" lines.
+   Eleven commits were rewritten on 2026-11-18 to remove such trailers; do not reintroduce
+   them.
 
 ## Architecture boundaries (enforced by `lint-imports` in CI)
 
