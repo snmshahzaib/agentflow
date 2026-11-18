@@ -4,7 +4,7 @@
 specialised agents plan it, retrieve evidence, check every claim against its sources, and
 approve the report before it can be exported.
 
-> **Status: in active development — Milestone 4 of 8.**
+> **Status: in active development — Milestone 5 of 8.**
 > This README documents what is *implemented*, not what is planned. The status table below is
 > the authoritative list. Nothing here claims to be production-tested, and no live deployment
 > exists yet.
@@ -122,7 +122,7 @@ source count, unsupported-claim count, token spend) so it cannot drift from real
 | LLM | Provider-agnostic OpenAI-compatible gateway; OpenRouter by default |
 | Search | Pluggable port: offline fixtures (default) or Tavily |
 | Frontend | React 19, TypeScript, Vite, Tailwind, TanStack Query |
-| Quality | ruff, mypy, import-linter, pytest, Vitest, gitleaks |
+| Quality | ruff, mypy, import-linter, pytest, Vitest, Playwright, axe-core, gitleaks |
 
 **No model ID appears in application code.** Every model is resolved from environment
 variables and validated against the provider catalogue at startup — see
@@ -135,13 +135,13 @@ variables and validated against the provider catalogue at startup — see
 | M1 | Walking skeleton + LLM config spine | complete |
 | M2 | Fixture research workflow, approval gate, restart recovery | complete |
 | M3 | Live OpenRouter gateway, free profile, cost ledger | complete |
-| M4 | Live Tavily search, URL safety, rate limits, retention | **complete — awaiting review** |
-| M5 | Complete frontend | not started |
+| M4 | Live Tavily search, URL safety, rate limits, retention | complete |
+| M5 | Review UI, browser end-to-end tests, accessibility | **complete — awaiting review** |
 | M6 | Verification, documentation, evaluation harness | not started |
 | M7 | Deployment and public repository | not started |
 | M8 | Completion report | not started |
 
-## What exists today (end of M4)
+## What exists today (end of M5)
 
 The complete research workflow runs end to end and is verified in Docker: submit a question,
 and the five nodes plan it, retrieve sources, synthesise findings, check each claim against
@@ -169,6 +169,24 @@ repository, with no API keys and no spend.
 **Retrieved is not verified.** Claim checking establishes that a retrieved source *states*
 a claim. It is not a fact check, and it offers no protection against a source being wrong.
 Reports say so in their own limitations section.
+
+### The review interface
+
+The dashboard is built around the decision a reviewer has to make. A task has its own URL, so
+a reviewer can link a colleague to exactly what they are looking at; the approval gate sits
+above the evidence rather than below it; and the evidence is tabbed — report, sources, claims,
+workflow — rather than stacked into one long scroll.
+
+The report is rendered as a document, with its claim-support table as a real table and the
+exact Markdown that will be exported one click away. Report content is model-written text
+quoting retrieved pages, so it is **rendered as hostile input**: no raw HTML, an explicit
+`http`/`https`/`mailto` allowlist so a `javascript:` href cannot become clickable, and
+`rel="noopener noreferrer"` on every link.
+
+Verified rather than asserted: **31 Playwright specs** drive the real stack — including the
+whole lifecycle through to checking the bytes of the downloaded Markdown — with **zero
+WCAG 2.1 A/AA violations** from axe-core across five views, the journey driven by keyboard
+alone, and no horizontal page scroll at 390, 834 or 1440 px.
 
 ## Quick start
 
@@ -207,6 +225,7 @@ Verify the whole stack end to end:
 ```bash
 scripts/smoke-test.sh http://localhost:8080            # submit -> gate -> approve
 scripts/restart-recovery-test.sh http://localhost:8080 # kill the worker, prove recovery
+scripts/e2e-test.sh                                    # 31 browser tests, real stack
 ```
 
 The first submits a task, waits for the approval gate, approves it, and checks idempotency,
@@ -230,6 +249,7 @@ outside Docker, and [`docs/testing.md`](docs/testing.md) for the test commands.
 | [`docs/testing.md`](docs/testing.md) | Test categories and verified results |
 | [`docs/decisions.md`](docs/decisions.md) | Architecture decision records |
 | [`docs/milestones/m4-report.md`](docs/milestones/m4-report.md) | Live web research: what was verified, and what was not |
+| [`docs/milestones/m5-report.md`](docs/milestones/m5-report.md) | The review interface, browser tests and accessibility |
 
 ## Licence
 

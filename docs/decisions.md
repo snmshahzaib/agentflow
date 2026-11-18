@@ -402,3 +402,92 @@ ceilings. The limiter is a convenience control, not the last line of defence.
 **Consequence.** Read endpoints are deliberately unlimited: polling is how the
 UI tracks progress, and limiting it would break the thing it is there to
 support.
+
+---
+
+## ADR-018 — Browser tests run against the real stack, not a mocked API
+
+**Status:** accepted (2026-11-18)
+
+**Decision.** The Playwright suite drives the real API, the real arq worker,
+real Postgres and real Redis, in the offline profile: the deterministic stub
+model adapter and the committed fixture corpus. Nothing on the happy path is
+mocked. Interception is reserved for responses the real backend will not
+readily produce — a dead API, a 429, a 500, hostile report content — and each
+one says why at the point of use.
+
+**Why.** A mocked browser test asserts that the UI renders our own
+assumptions about the API. The expensive failures are the ones where the two
+disagree, and the first run of this suite proved the point: it found a bug
+where a completed task rendered an empty timeline and "No report yet", which
+no amount of mocking would have surfaced because the mock would have returned
+the data the real client never fetched.
+
+The offline profile is what makes this affordable. The stub adapter and
+fixture corpus need no credentials and cost nothing, so the suite runs in CI
+on every push rather than nightly against a metered provider.
+
+**Consequence.** `scripts/e2e-stack.sh` **asserts** the profile before any
+test runs, rather than assuming it: a suite that silently ran against live
+providers would spend a metered allowance and stop being deterministic, and
+several tests assert fixture-specific labels. The cost is that CI's slowest
+job now builds images and waits for a worker, about a minute.
+
+---
+
+## ADR-019 — Report Markdown is rendered, and treated as hostile input
+
+**Status:** accepted (2026-11-18)
+
+**Decision.** The report is rendered to HTML with `react-markdown`, with raw
+HTML disabled, an explicit http/https/mailto URL allowlist, and
+`rel="noopener noreferrer"` on every link. The exact Markdown source stays one
+click away. Heading levels are shifted down so the report nests under the page
+outline.
+
+**Why.** Through M4 the report was shown in a `<pre>`, with a comment saying
+proper rendering belonged in M5. A reviewer deciding whether to approve a
+document needs to read it: the claim-support table is the densest and most
+decision-relevant part of a report, and as pipe-delimited text it is close to
+unreadable. Keeping the raw view is what makes rendering safe to adopt —
+approval is a judgement about an artefact, and the artefact that gets exported
+must be inspectable exactly as it will be exported.
+
+The content is model-written text quoting retrieved pages, so it is treated as
+attacker-influenced rather than as content we authored. Rejected: rendering
+with `rehype-raw` plus a sanitiser. Allowing HTML and then removing the
+dangerous parts is a larger surface than never parsing HTML at all.
+
+**Consequence.** Fifteen component tests and four browser tests pin the
+behaviour, because every property above is a library default that a future
+change could silently remove. The bundle grows by about 65 kB gzipped.
+
+---
+
+## ADR-020 — The open section lives in the URL, and sections are tabs
+
+**Status:** accepted (2026-11-18)
+
+**Decision.** `/tasks/:taskId?view=report|sources|claims|workflow`. The task
+id is a path segment and the open section a query parameter; switching
+sections replaces rather than pushes history. The sections are ARIA tabs with
+the full keyboard pattern.
+
+**Why.** Selection used to be component state, so a reload lost it and there
+was nothing to send a colleague. Research review is collaborative — "look at
+the unsupported claim in this report" needs a link.
+
+Tabs rather than one long column because the reviewer's task is to read a
+report and decide, and the supporting evidence is deep. Stacked, the primary
+task became a scrolling exercise, and on a phone the approval controls sat
+several screens below the report they applied to. The approval gate therefore
+sits *outside* the tabs: it is the reason the page exists and must not be
+something a reviewer has to go and find.
+
+Switching sections replaces history because walking back through four tab
+changes one Back press at a time is not what a reader wants; returning to the
+task list is.
+
+**Consequence.** Deep links, reload and the Back button all work, and are
+tested. An invalid `view` parameter falls back to the report rather than
+rendering nothing, because a URL is something people edit by hand.

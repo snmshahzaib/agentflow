@@ -148,6 +148,54 @@ test.describe('report rendering is not an injection surface', () => {
     expect(visible).not.toContain('af_session')
   })
 
+  test('security headers actually reach the browser', async ({ page }) => {
+    // Configured is not served. nginx *replaces* inherited add_header
+    // directives as soon as a block declares one of its own, and the
+    // cache-control block that answers "/" declared one -- so every security
+    // header was silently absent from the page while looking correct in the
+    // config. This test reads what the browser received.
+    const response = await page.goto('/')
+    const headers = response!.headers()
+
+    expect(headers['x-content-type-options']).toBe('nosniff')
+    expect(headers['x-frame-options']).toBe('DENY')
+    expect(headers['referrer-policy']).toBe('strict-origin-when-cross-origin')
+
+    const csp = headers['content-security-policy'] ?? ''
+    expect(csp).toContain("default-src 'self'")
+    expect(csp).toContain("object-src 'none'")
+    expect(csp).toContain("frame-ancestors 'none'")
+    // No escape hatches: either of these would make the policy decorative.
+    expect(csp).not.toContain('unsafe-inline')
+    expect(csp).not.toContain('unsafe-eval')
+  })
+
+  test('the app runs clean under its own Content-Security-Policy', async ({ page }) => {
+    // A policy that the application violates is a policy someone will
+    // loosen. This drives the real journey and fails on any violation.
+    const violations: string[] = []
+    page.on('console', (message) => {
+      const text = message.text()
+      if (/content security policy/i.test(text)) violations.push(text)
+    })
+    const errors: string[] = []
+    page.on('pageerror', (error) => errors.push(error.message))
+
+    const app = new Dashboard(page)
+    await app.open()
+    const taskId = await seedApprovedGateTask(page)
+
+    for (const view of ['report', 'sources', 'claims', 'workflow'] as const) {
+      await app.open(`/tasks/${taskId}?view=${view}`)
+      await expect(app.panel).toBeVisible()
+    }
+    await app.approveButton.click()
+    await expect(app.detail.getByText('Approved').first()).toBeVisible({ timeout: 60_000 })
+
+    expect(violations).toEqual([])
+    expect(errors).toEqual([])
+  })
+
   test('external links in the sources list cannot reach back through window.opener', async ({
     page,
   }) => {

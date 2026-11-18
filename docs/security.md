@@ -95,6 +95,67 @@ implemented or removed before the application is exposed publicly; until then th
 that actually limit spend are the per-task token, call and search caps above, plus
 `LLM_FREE_MODELS_ONLY`.
 
+### Deployment blockers
+
+**The application must not be made publicly accessible until all of the following are
+reviewed and in place.** This list is the gate, not a wish list:
+
+| # | Blocker | State |
+|---|---|---|
+| 1 | Access control for live research (`DEMO_ACCESS_CODE` or equivalent) | **not implemented** |
+| 2 | Daily spend ceiling across all visitors (`DEMO_DAILY_BUDGET_USD`) | **not implemented** |
+| 3 | Per-session task limit (`DEMO_MAX_TASKS_PER_SESSION`) | **not implemented** |
+| 4 | Request rate limiting | implemented (ADR-017), needs review under real traffic |
+| 5 | Secret handling for a hosted environment — provider keys, `SESSION_SECRET` | not reviewed |
+
+Items 1–3 are settings that currently do nothing. Item 4 exists and is tested but has only
+been exercised against a single local session. Item 5 is unstarted: the application has never
+run anywhere but a local Docker host.
+
+## Frontend security
+
+The browser is given model-written text that quotes retrieved web pages, so the report body is
+attacker-influenced. It is rendered as hostile input (ADR-019):
+
+| Property | How |
+|---|---|
+| Embedded HTML is never parsed | `react-markdown` without `rehype-raw`. A `<script>` or `<img onerror>` in a report is displayed as text. |
+| Only safe URL schemes become links | An explicit `http`/`https`/`mailto` allowlist (`src/lib/urls.ts`), applied to report links *and* to stored source URLs. A `javascript:` or `data:` href is shown as text and labelled "unsafe link, not opened". |
+| Opened pages cannot reach back | `rel="noopener noreferrer"` and `target="_blank"` on every external link. |
+| The session cookie is not script-reachable | `HttpOnly`, `SameSite=Lax`, `Secure` in production. Verified from the browser: `document.cookie` does not contain it. |
+| No `dangerouslySetInnerHTML` anywhere | React escapes all interpolated values, including hostile source titles and excerpts. |
+
+Each property is pinned by tests — fifteen component tests and four browser tests — because
+every one of them is a library default that a future change could silently remove. The browser
+tests run the hostile content in a real engine, where a `<script>` would actually execute.
+
+The payloads are injected by the tests rather than committed as fixtures: a corpus of working
+exploits in the repository would be a hazard, and the backend's own injection tests already
+cover what reaches the model.
+
+### Response headers
+
+| Header | Value |
+|---|---|
+| `Content-Security-Policy` | `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'` |
+| `X-Content-Type-Options` | `nosniff` |
+| `X-Frame-Options` | `DENY` |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+
+The policy has no `unsafe-inline` and no `unsafe-eval`, which is possible because the bundle
+is self-contained: no CDN, no external fonts, no third-party analytics, and the API is
+same-origin through the nginx proxy. A browser test drives the full journey and fails on any
+CSP violation, because a policy the application itself violates is a policy someone will
+eventually loosen.
+
+**These headers were configured but not served.** nginx *replaces* inherited `add_header`
+directives as soon as a block declares one of its own, and the cache-control block that
+answers `/` — reached by internal rewrite to `/index.html` — declared one. Every security
+header was therefore absent from the pages that mattered while looking correct in the config
+file. Found in M5 by reading the headers the browser actually received; the headers are now
+repeated in each such block, and a test asserts them from the response rather than from the
+configuration.
+
 ## Provider data policy
 
 AgentFlow sends `provider.data_collection=deny` with every request, so routing

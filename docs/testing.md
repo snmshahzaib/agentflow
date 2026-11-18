@@ -1,6 +1,6 @@
 # Testing
 
-Every number on this page came from a run on 2026-11-17. Nothing here is
+Every number on this page came from a run on 2026-11-18. Nothing here is
 projected or aspirational; where coverage is missing, it says so.
 
 ## Commands
@@ -26,9 +26,19 @@ uv run pytest -m live_models                      # BOTH allowances; 8 model cal
 
 ```bash
 cd frontend
-pnpm test            # 17 Vitest tests
+pnpm test            # 58 component tests (Vitest)
 pnpm lint            # ESLint, --max-warnings 0
 pnpm typecheck       # tsc -b
+```
+
+Browser end-to-end tests drive the **real stack** in its offline profile, so
+they need it running. The runner does both:
+
+```bash
+scripts/e2e-test.sh                      # start the stack, run all 31 specs
+scripts/e2e-test.sh --down               # ...and tear it down afterwards
+scripts/e2e-test.sh e2e/a11y.spec.ts     # one spec
+scripts/e2e-stack.sh up|down|env         # manage the stack by hand
 ```
 
 ```bash
@@ -37,7 +47,7 @@ scripts/smoke-test.sh                # end-to-end against a running stack
 scripts/restart-recovery-test.sh     # worker restart recovery, real Docker
 ```
 
-## Results (measured 2026-11-17)
+## Results (measured 2026-11-18)
 
 | Suite | Count | Result |
 |---|---|---|
@@ -47,7 +57,8 @@ scripts/restart-recovery-test.sh     # worker restart recovery, real Docker
 | Live models (`-m live`, free profile) | 10 | **all pass**, $0.00 spend |
 | Live search (`-m "live_search and not live_models"`) | 9 | **all pass** |
 | Live full lifecycle (`-m live_models`) | 1 | **pass** — 8 model calls, 8 searches |
-| Frontend (Vitest) | 17 | pass |
+| Frontend components (Vitest) | 58 | pass in 4.1 s |
+| Browser end-to-end (Playwright, real stack) | 31 | pass in 1.1 min |
 | ESLint (`--max-warnings 0`) / `tsc -b` | — | clean |
 | Frontend production build | — | succeeds |
 | ruff check + format | — | clean |
@@ -176,13 +187,28 @@ self-approve, its fabricated citations do not resolve, its "everything is
 supported" verdicts are downgraded, and the limitations section still reports
 the truth.
 
-**Frontend** (Vitest) — the provenance banner states that offline output is
-not from a live model; node descriptions never claim a claim is verified as
-true; the claim table says support is not a truth judgement and counts
-unsupported claims; the export link is absent before approval and present
-after; a retried node stays visible in the timeline; client-side validation
-blocks a request rather than relying on a 422; and API errors surface their
-correlation id.
+**Frontend components** (Vitest) — the provenance banner states that offline
+output is not from a live model; node descriptions never claim a claim is
+verified as true; the claim table says support is not a truth judgement and
+counts unsupported claims; the export link is absent before approval and
+present after; a retried node stays visible in the timeline; client-side
+validation blocks a request rather than relying on a 422; and API errors
+surface their correlation id.
+
+Added in M5: that the report renders as a document rather than as Markdown
+source and can still show its exact source; that a superseded version is
+readable and labelled; that the approval gate states each action's
+consequence and refuses a revision with no note, moving focus to the field;
+that progress names its stage and appears exactly once in the accessibility
+tree; that tabs implement the roving-tabindex and arrow/Home/End pattern; and
+**fifteen tests pinning the Markdown renderer's safety properties**, each of
+which is a library default a future change could silently remove.
+
+**Task-scoped queries** (`useApi.test.tsx`) — that a status change refetches
+everything hanging off a task, and that the previous data stays on screen
+while it does. This is the regression test for a bug the browser suite found:
+polling stops when a task leaves `running`, so without the status in the query
+key a completed task rendered an empty timeline and "No report yet".
 
 ## Fixtures and determinism
 
@@ -306,10 +332,56 @@ depth, without raw content — at zero cost. See ADR-016.
 `docs/milestones/m4-acceptance-ledger.md` records which criteria are verified,
 by which batch, and what could not be verified at all.
 
+## Browser end-to-end tests
+
+31 Playwright specs drive the **real stack** — real API, real arq worker, real
+Postgres and Redis — in the offline profile: the deterministic stub model
+adapter and the committed fixture corpus. Nothing on the happy path is mocked,
+so the journey is genuinely executed, and because the profile needs no
+credentials and costs nothing the suite runs in CI on every push (ADR-018).
+
+`scripts/e2e-stack.sh` **asserts** the profile before any test runs rather
+than assuming it: a suite that silently ran against live providers would spend
+a metered allowance and stop being deterministic, and several specs assert
+fixture-specific labels.
+
+| Spec | Covers |
+|---|---|
+| `journey.spec.ts` | The whole lifecycle: empty state, provenance, client validation, submission, all five stages reaching success, fixture-labelled sources, claim wording, rendered report, raw source, export locked, revision refused without a note, v2 produced, superseded version readable, approval, and the **downloaded Markdown** checked for its limitations and provenance |
+| `navigation.spec.ts` | Deep links, reload, Back, the section in the URL, unknown paths, an invalid `view` parameter |
+| `a11y.spec.ts` | axe-core WCAG 2.1 A/AA on five views, the journey driven by keyboard alone, announced validation errors, every control named |
+| `responsive.spec.ts` | No horizontal page scroll at 390/834/1440 px across all sections, contained table overflow, gate placement on a phone, stacking versus side-by-side |
+| `states.spec.ts` | Loading, empty-with-a-reason, aborted request with a working retry, 500 with correlation id, 429, failed task |
+| `security.spec.ts` | Hostile report content in a real browser; hostile source title and URL; HttpOnly session cookie; `rel="noopener"` on every external link |
+
+Interception is used only in `states.spec.ts` and `security.spec.ts`, for
+responses the real backend will not readily produce. The hostile payloads are
+injected rather than committed: a corpus of working exploits in the repository
+would be a hazard, and the backend's own injection tests already cover what
+reaches the model.
+
+### What the browser suite found
+
+Both of these were real defects, not test friction:
+
+- **A completed task rendered an empty UI.** The timeline, sources, claims and
+  report all showed their empty states while the header correctly said
+  "Awaiting approval". Polling stops the moment a task leaves `running`, so
+  the last poll before that transition was the final word — and it happened
+  before any of that data existed.
+- **The page scrolled sideways by 7 px on a phone.** The single-column grid
+  was `auto`-sized, so a long unbroken URL inside a card set the column's
+  min-content width.
+
 ## Known gaps
 
-- **No browser-level end-to-end test yet.** Planned for M5 (one Playwright
-  happy path), once there is a full UI to drive.
+- **One browser engine.** The suite runs Chromium only. A second engine would
+  roughly double the slowest CI job for a dashboard whose risky surface is
+  Markdown rendering and ARIA semantics, neither of which is
+  engine-specific.
+- **No visual regression testing.** Layout is asserted by measurement (no
+  horizontal scroll, relative element positions), not by screenshot
+  comparison.
 - **Nothing is verified against the shipped paid profile.** All live evidence
   concerns free preview models, which are materially weaker and measurably
   more verbose. It is not evidence about `anthropic/claude-sonnet-5`, and the
