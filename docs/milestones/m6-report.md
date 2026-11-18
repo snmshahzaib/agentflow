@@ -18,7 +18,7 @@ deterministic stub adapter and the committed fixture corpus.
 | D | `.env.example` complete; offline demo needs no credentials | **met** | Audited mechanically: every `Settings` field is documented and no removed field lingers. `LLM_PROVIDER=stub`, `SEARCH_PROVIDER=fixture` by default |
 | E | All test commands documented | **met** | `docs/testing.md` and `docs/development.md`; each command run from the clean checkout before being written down |
 | F | Portfolio-quality README | **met** | Problem, solution, capabilities, architecture, stack, quick start, 9 real screenshots, demo workflow, testing, security, limitations, status |
-| G | Documentation audited against implementation | **met** | `scripts/audit-docs.py`, 94 claims checked, in CI |
+| G | Documentation audited against implementation | **met** | `scripts/audit-docs.py`, 95 claims checked, in CI |
 | H | Automated evaluation for grounding and unsupported claims | **met** | 7 cases, 5 invariants, 2 observations; 11 enforcing tests; `docs/evaluation.md` |
 | I | Evidence supports the claims made | **met** | Test counts now checked mechanically; four stale or broken claims found and fixed |
 | J | Bundle investigated and improved | **met** | 151 kB → 102 kB gzipped initial load, measured |
@@ -135,7 +135,7 @@ roughly double the slowest CI job to re-prove what is engine-independent by cons
 | Browser end-to-end | 34 | Chromium 33 + Firefox journey |
 | Grounding evaluation | 7 cases | all invariants hold |
 | Live provider | 20 | skipped without credentials; M3/M4 evidence preserved |
-| Documentation audit | 94 claims | links, scripts, settings, test counts |
+| Documentation audit | 95 claims | links, scripts, settings, test counts |
 | Mermaid diagrams | 6 | all parse |
 
 CI runs seven checks per push: secret scan, backend (lint, types, boundaries, tests, evaluation,
@@ -172,12 +172,14 @@ stack, and the dependency audit.
 ## 8. Commits
 
 ```
-ee683e8  perf(frontend): defer the Markdown renderer, add Firefox journey coverage
-dee9164  feat(evals): grounding evaluation on deterministic fixtures
-86f5c2a  docs: portfolio README, architecture diagrams, and an audit that enforces them
+ee683e8 perf(frontend): defer the Markdown renderer, add Firefox journey coverage
+dee9164 feat(evals): grounding evaluation on deterministic fixtures
+86f5c2a docs: portfolio README, architecture diagrams, and an audit that enforces them
+af7d40f docs(m6): record the verification, and the reproducible setup it produced
+e7ced47 test(e2e): keep screenshot capture out of the test run
+d7097b0 fix(ci): run the docs audit with the backend environment
 ```
 
-(plus this report and the reproducibility documentation)
 
 ## 9. Readiness for M7
 
