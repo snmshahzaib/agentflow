@@ -135,25 +135,29 @@ for not sending the material at all.
 - gitleaks scans the working tree, the staged set and the full history, locally
   via pre-commit and again in CI.
 
-## Known unfixable advisories
+## Dependency advisories
 
-Dependency audits run in CI (`pip-audit` and `pnpm audit`). Findings are
-fixed, not suppressed — the only exceptions are advisories with **no published
-fix**, and each is listed here with its reasoning. CI fails on anything not on
-this list, so a new advisory surfaces rather than hiding behind a permanently
-red job.
+Dependency audits run in CI (`pip-audit --strict` and `pnpm audit`). Findings
+are fixed, not suppressed. Exceptions are only ever for advisories with **no
+published fix**, each listed here with its reasoning, and CI fails on anything
+not on the list so a new advisory surfaces rather than hiding behind a
+permanently red job.
 
-| Advisory | Package | Why it is not fixed | Exposure |
-|---|---|---|---|
-| [GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf) | `picomatch` (high, ReDoS) | No fix exists: the advisory covers `<=4.0.7` and 4.0.7 is the latest published release. Reached via `vite` and `@tailwindcss/vite`. | Build tooling only; never reaches the browser bundle. Exploitation needs hostile glob patterns fed to the build, and ours come from our own config. |
+**There are currently no accepted exceptions.** `KNOWN_UNFIXABLE` in the CI
+audit step is empty, so any advisory at all fails the job.
 
-**Re-review triggers:** picomatch publishing a fix, or the package becoming a
-runtime rather than build-time dependency.
+Resolved during the project, for the record:
 
-Fixed rather than excepted, for contrast: `minimatch` (ReDoS) was pinned
-forward via a pnpm override, and four advisories in the LangGraph checkpoint
-packages plus `starlette` were resolved by version floors recorded in
-`pyproject.toml` with their advisory IDs.
+| Advisory | Package | Outcome |
+|---|---|---|
+| [GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf) | `picomatch` (high, ReDoS) | **Withdrawn upstream on 2026-11-18.** It was carried as the single accepted exception through M2–M4 because no fixed version existed; it has now been retracted from the advisory database and `pnpm audit` is clean with `picomatch` 4.0.7 still installed. The exception was removed rather than left in place. |
+| [PYSEC-2026-1845](https://github.com/advisories) | `pytest` | Fixed by upgrading to `pytest>=9.0.3` (resolved 9.2.0). A development dependency that never ships, but an unlisted advisory fails CI by design. |
+| ReDoS | `minimatch` | Pinned forward via a pnpm override. |
+| four advisories | LangGraph checkpoint packages, `starlette` | Resolved by version floors recorded in `pyproject.toml` with their advisory IDs. |
+
+The withdrawal is worth recording as a process point: an exception list is only
+safe if something keeps checking it. This one was re-checked at every milestone
+and removed the day it became unnecessary.
 
 ## Deliberate non-goals
 

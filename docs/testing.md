@@ -55,7 +55,7 @@ scripts/restart-recovery-test.sh     # worker restart recovery, real Docker
 | import-linter | 4 contracts | all kept |
 | gitleaks (history + staged) | — | no leaks |
 | pip-audit | 90 packages | no known vulnerabilities |
-| pnpm audit | — | one known-unfixable advisory (picomatch); any other fails CI |
+| pnpm audit | — | clean; no accepted exceptions (the picomatch advisory was withdrawn upstream on 2026-11-18) |
 | `scripts/smoke-test.sh` | — | passes |
 | `scripts/restart-recovery-test.sh` | — | passes against Docker |
 

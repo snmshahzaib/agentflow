@@ -177,10 +177,12 @@ jobs:
         # rather than hiding behind a permanently red job. Each entry needs a
         # justification in docs/security.md and goes as soon as a fix ships.
         env:
-          # GHSA-fc5q-39xc-vjpf: picomatch ReDoS. The advisory covers <=4.0.7
-          # and 4.0.7 is the latest published release, so no fix exists. Build
-          # tooling only (vite, tailwind); never reaches the browser bundle.
-          KNOWN_UNFIXABLE: GHSA-fc5q-39xc-vjpf
+          # Empty: there is no accepted advisory right now, so *any* finding
+          # fails this step. The previous entry, GHSA-fc5q-39xc-vjpf
+          # (picomatch ReDoS), was withdrawn upstream on 2026-11-18 and is
+          # gone from the database -- a stale exception is how the next real
+          # advisory would slip through unnoticed.
+          KNOWN_UNFIXABLE: ""
         run: |
           pnpm install --frozen-lockfile
           pnpm audit --json > audit.json || true

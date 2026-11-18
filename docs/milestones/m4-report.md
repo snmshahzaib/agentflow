@@ -319,6 +319,12 @@ Upgraded to `pytest>=9.0.3` (resolved 9.2.0); all 408 tests pass on it and
 
 ## 8. Outstanding security item
 
+> **Update (2026-11-18, during M5):** this advisory was **withdrawn
+> upstream**. `pnpm audit` is now clean with `picomatch` 4.0.7 still
+> installed, and the CI exception has been removed so any advisory fails the
+> job again. The paragraph below describes the position as it stood at the end
+> of M4.
+
 The `picomatch` advisory (GHSA-fc5q-39xc-vjpf) is still unresolved upstream:
 `4.0.7` remains the latest published version and the advisory covers `<=4.0.7`,
 so there is no fixed version to move to. It remains an explicit, single-entry
