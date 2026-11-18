@@ -47,5 +47,18 @@ export default defineConfig({
       name: 'chromium',
       use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 860 } },
     },
+    {
+      // Firefox runs the critical journey only, not the whole suite.
+      //
+      // The journey is the spec where an engine difference would actually
+      // matter -- form submission, polling, a real download, the rendered
+      // report. The rest is either engine-independent by construction
+      // (axe-core's rules, our own ARIA attributes) or measured against
+      // layout rules that Gecko and Blink agree on. Running all 33 specs
+      // twice would roughly double the slowest CI job to re-prove that.
+      name: 'firefox',
+      use: { ...devices['Desktop Firefox'], viewport: { width: 1280, height: 860 } },
+      testMatch: /journey\.spec\.ts/,
+    },
   ],
 })

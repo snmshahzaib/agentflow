@@ -2,10 +2,19 @@ import { fileURLToPath, URL } from 'node:url'
 
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
+import { visualizer } from 'rollup-plugin-visualizer'
 import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    // Bundle composition report, written only when ANALYSE=1 so a normal
+    // build stays quiet and fast.
+    ...(process.env.ANALYSE
+      ? [visualizer({ filename: 'bundle-report.json', template: 'raw-data', gzipSize: true })]
+      : []),
+  ],
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },

@@ -132,3 +132,7 @@ desktop.ini
 *.swo
 *~
 .cache/
+
+# Bundle analysis output (ANALYSE=1 pnpm build)
+frontend/bundle-report.json
+frontend/bundle-report.html

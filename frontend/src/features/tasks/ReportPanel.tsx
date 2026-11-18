@@ -1,10 +1,21 @@
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 
-import { Markdown } from '@/components/Markdown'
 import { EmptyState, Skeleton } from '@/components/Primitives'
 import { useReport } from '@/hooks/useApi'
 import { api } from '@/services/api'
 import type { ReportStatus, TaskStatus } from '@/types/api'
+
+/**
+ * The Markdown renderer is loaded on demand.
+ *
+ * It pulls in the unified/remark/micromark stack, which is the single largest
+ * dependency in the bundle after React itself and is useless until a report
+ * is actually on screen -- the first page a visitor loads has no report at
+ * all. Splitting it out keeps that cost off the initial load.
+ */
+const Markdown = lazy(() =>
+  import('@/components/Markdown').then((module) => ({ default: module.Markdown })),
+)
 
 /**
  * The report, as a reviewer reads it.
@@ -127,7 +138,9 @@ export function ReportPanel({
             {report.data.content_markdown}
           </pre>
         ) : (
-          <Markdown>{report.data.content_markdown}</Markdown>
+          <Suspense fallback={<Skeleton lines={8} label="Rendering report…" />}>
+            <Markdown>{report.data.content_markdown}</Markdown>
+          </Suspense>
         )}
       </div>
     </div>

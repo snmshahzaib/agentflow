@@ -161,12 +161,12 @@ jobs:
         working-directory: frontend
         run: pnpm install --frozen-lockfile
 
-      - name: Install the browser
+      - name: Install the browsers
         working-directory: frontend
-        # Chromium only. A second engine would double the slowest job in CI
-        # for a dashboard whose risky surface is Markdown rendering and ARIA,
-        # neither of which is engine-specific.
-        run: pnpm exec playwright install --with-deps chromium
+        # Chromium runs all 33 specs; Firefox runs the critical journey only.
+        # See the comment on the firefox project in playwright.config.ts for
+        # why the whole suite is not run twice.
+        run: pnpm exec playwright install --with-deps chromium firefox
 
       # The suite drives the real API, worker, Postgres and Redis, with the
       # stub model adapter and the committed fixture corpus. No credentials,
