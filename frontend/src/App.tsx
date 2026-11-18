@@ -73,7 +73,12 @@ function Dashboard() {
         {meta.data ? <ProvenanceBanner meta={meta.data} /> : null}
       </div>
 
-      <main className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,21rem)_minmax(0,1fr)]">
+      {/* grid-cols-1 is load-bearing, not redundant. Without it the implicit
+          single column is auto-sized, so a long unbroken URL inside a card
+          sets the column's min-content width and the whole page scrolls
+          sideways by a few pixels on a phone. The lg template already clamps
+          with minmax(0,…) for the same reason. */}
+      <main className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,21rem)_minmax(0,1fr)]">
         <div className="space-y-4">
           <TaskCreateForm onCreated={(id) => void navigate(`/tasks/${id}`)} />
           <section aria-label="Your research tasks">
