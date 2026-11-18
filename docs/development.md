@@ -42,20 +42,56 @@ pnpm install
 pnpm dev                                             # terminal 3 — http://localhost:5173
 ```
 
+## Connecting to the services
+
+The integration tests and the dev tools need Postgres and Redis. **Use the
+wrapper rather than the obvious defaults:**
+
+```bash
+docker compose up -d postgres redis
+scripts/with-services.sh uv run pytest
+scripts/with-services.sh uv run python scripts/run_evals.py
+```
+
+`localhost:5432` and `localhost:6379` are the wrong guesses here in two ways.
+Compose publishes those services on *configurable* host ports
+(`POSTGRES_HOST_PORT`, `REDIS_HOST_PORT`), and the database password comes
+from the untracked `.env`. A developer who happens to run Postgres locally
+gets a silent connection to the wrong server rather than an error — which is
+exactly what had been happening on the author's machine until M6 checked.
+
+So `scripts/with-services.sh` derives the connection strings from
+`docker compose port` and `.env`, creates the three databases if they are
+absent, and leaves anything already in the environment alone, so CI — which
+runs service containers on fixed ports — is unaffected.
+
+| Database | Purpose |
+|---|---|
+| `agentflow` | the running application |
+| `agentflow_test` | integration tests; reset between runs |
+| `agentflow_eval` | the grounding evaluation, so a run cannot disturb the others |
+| `agentflow_live` | preserved live-provider evidence; never truncated |
+
 ## Quality gates
 
 ```bash
 cd backend
 uv run ruff check . && uv run ruff format --check .
-uv run mypy app
+uv run mypy app evals
 uv run lint-imports        # architecture boundaries
-uv run pytest
-uv run pytest -m "not integration"    # no Postgres/Redis needed
+cd .. && scripts/with-services.sh uv run pytest
+cd backend && uv run pytest -m "not integration"    # no Postgres/Redis needed
 ```
 
 ```bash
 cd frontend
 pnpm lint && pnpm test && pnpm build
+pnpm check:diagrams        # every Mermaid block parses
+```
+
+```bash
+python3 scripts/audit-docs.py   # docs match the implementation; no services needed
+scripts/e2e-test.sh             # 34 browser tests against the real stack
 ```
 
 Or everything at once, from the repository root:
@@ -66,6 +102,31 @@ make verify
 
 `make verify` is the honest pre-claim gate — never report a milestone complete without it, and
 never report it as passing without pasting its real output.
+
+## Verified from a clean checkout
+
+The quick start above was run from a fresh `git clone` on 2026-11-18, on
+isolated ports, with no credentials of any kind:
+
+```bash
+git clone https://github.com/snmshahzaib/agentflow.git && cd agentflow
+cp .env.example .env
+docker compose up --build
+```
+
+| Step | Result |
+|---|---|
+| `docker compose up --build` | all five containers healthy |
+| `GET /ready` | `ready: true` — database, queue and LLM components all up |
+| `GET /api/meta` | `offline_mode: true`, `llm: stub`, `search: fixture` |
+| `scripts/smoke-test.sh` | PASSED — submit, gate, approve, session scoping |
+| `scripts/with-services.sh uv run pytest` | 419 passed, 20 skipped |
+| `scripts/run_evals.py` | 7/7 cases pass every invariant |
+| `pnpm install && pnpm test && pnpm build` | 58 passed, build clean |
+| `python3 scripts/audit-docs.py` | 91 claims check out |
+
+No step required an API key, an account, or editing a file beyond copying
+`.env.example`.
 
 ## Commit workflow
 

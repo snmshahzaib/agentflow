@@ -327,7 +327,7 @@ Stated because a portfolio project that lists none is not being honest.
 | M3 | Live OpenRouter gateway, free profile, cost ledger | complete |
 | M4 | Live Tavily search, URL safety, rate limits, retention | complete |
 | M5 | Review UI, browser end-to-end tests, accessibility | complete |
-| M6 | Documentation, verification, evaluation harness | **in progress** |
+| M6 | Documentation, verification, evaluation harness | **complete — awaiting review** |
 | M7 | Deployment and public repository | not started |
 | M8 | Completion report | not started |
 
@@ -346,6 +346,7 @@ verified, what was not, and what went wrong.
 | [`docs/testing.md`](docs/testing.md) | Every suite, what it asserts, and the gaps |
 | [`docs/evaluation.md`](docs/evaluation.md) | The grounding harness and how to run it |
 | [`docs/decisions.md`](docs/decisions.md) | 20 architecture decision records |
+| [`docs/milestones/m6-report.md`](docs/milestones/m6-report.md) | What M6 verified, and what it found wrong |
 | [`docs/development.md`](docs/development.md) | Running outside Docker |
 
 ## Licence
