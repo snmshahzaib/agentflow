@@ -90,7 +90,7 @@ pnpm check:diagrams        # every Mermaid block parses
 ```
 
 ```bash
-python3 scripts/audit-docs.py   # docs match the implementation; no services needed
+cd backend && uv run python ../scripts/audit-docs.py   # docs match the implementation
 scripts/e2e-test.sh             # 34 browser tests against the real stack
 ```
 
@@ -123,7 +123,7 @@ docker compose up --build
 | `scripts/with-services.sh uv run pytest` | 419 passed, 20 skipped |
 | `scripts/run_evals.py` | 7/7 cases pass every invariant |
 | `pnpm install && pnpm test && pnpm build` | 58 passed, build clean |
-| `python3 scripts/audit-docs.py` | 91 claims check out |
+| `uv run python ../scripts/audit-docs.py` | 91 claims check out |
 
 No step required an API key, an account, or editing a file beyond copying
 `.env.example`.

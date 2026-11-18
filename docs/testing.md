@@ -395,7 +395,7 @@ suite through the real graph.
 ## Documentation audit
 
 ```bash
-python3 scripts/audit-docs.py        # no services needed
+cd backend && uv run python ../scripts/audit-docs.py   # no services needed
 ```
 
 Checks the claims that can be checked mechanically: every relative link

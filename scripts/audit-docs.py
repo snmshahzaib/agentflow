@@ -79,7 +79,11 @@ def check_env_example() -> None:
     try:
         from app.core.config import Settings
     except Exception as exc:  # pragma: no cover - import guard
-        fail(f"could not import Settings to audit .env.example: {exc}")
+        fail(
+            f"could not import Settings to audit .env.example ({exc}). "
+            "Run this with the backend environment: "
+            "cd backend && uv run python ../scripts/audit-docs.py"
+        )
         return
 
     example = (ROOT / ".env.example").read_text(encoding="utf-8")
