@@ -183,7 +183,7 @@ quoting retrieved pages, so it is **rendered as hostile input**: no raw HTML, an
 `http`/`https`/`mailto` allowlist so a `javascript:` href cannot become clickable, and
 `rel="noopener noreferrer"` on every link.
 
-Verified rather than asserted: **31 Playwright specs** drive the real stack — including the
+Verified rather than asserted: **33 Playwright specs** drive the real stack — including the
 whole lifecycle through to checking the bytes of the downloaded Markdown — with **zero
 WCAG 2.1 A/AA violations** from axe-core across five views, the journey driven by keyboard
 alone, and no horizontal page scroll at 390, 834 or 1440 px.
@@ -225,7 +225,7 @@ Verify the whole stack end to end:
 ```bash
 scripts/smoke-test.sh http://localhost:8080            # submit -> gate -> approve
 scripts/restart-recovery-test.sh http://localhost:8080 # kill the worker, prove recovery
-scripts/e2e-test.sh                                    # 31 browser tests, real stack
+scripts/e2e-test.sh                                    # 33 browser tests, real stack
 ```
 
 The first submits a task, waits for the approval gate, approves it, and checks idempotency,

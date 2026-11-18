@@ -145,6 +145,39 @@ accepted one (ADR-014).
 **A failed search never becomes substitute data.** The subtask yields nothing, the failure is
 counted and disclosed in the report, and only a total failure fails the task (ADR-015).
 
+## The frontend
+
+One React application, served as a static bundle by nginx, which also proxies
+`/api` so the browser sees a single origin and the session cookie needs no
+cross-site relaxation.
+
+| Concern | Where |
+|---|---|
+| Routes and shell | `src/App.tsx` — `/` and `/tasks/:taskId`, section in `?view=` |
+| Typed API client, one error envelope | `src/services/api.ts` |
+| Query hooks, polling, invalidation | `src/hooks/useApi.ts` |
+| Report rendering, treated as hostile input | `src/components/Markdown.tsx`, `src/lib/urls.ts` |
+| ARIA tabs | `src/components/Tabs.tsx` |
+| Task detail, gate, evidence panels | `src/features/tasks/` |
+
+Three structural decisions:
+
+**State lives in the URL, not in a component.** The task id is a path segment
+and the open section a query parameter, so a reviewer can link a colleague to
+exactly what they are looking at and a reload keeps the selection (ADR-020).
+
+**Polling, not server-sent events** (ADR-006). The status of a task is also
+part of the query key for everything scoped to that task, which is
+load-bearing rather than incidental: polling stops the moment a task leaves
+`running`, so without it the last poll before the transition is the final word
+— and it happens before the steps, sources, claims and report exist. Arriving
+at the approval gate is itself a refetch.
+
+**The report is rendered, and rendered as hostile input** (ADR-019). It is
+model-written text quoting retrieved pages. No raw HTML is parsed, only
+`http`/`https`/`mailto` URLs become links, and every link carries
+`rel="noopener noreferrer"`.
+
 ## Scheduled work
 
 The worker runs two crons alongside its job handlers:

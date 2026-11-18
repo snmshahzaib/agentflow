@@ -35,7 +35,7 @@ Browser end-to-end tests drive the **real stack** in its offline profile, so
 they need it running. The runner does both:
 
 ```bash
-scripts/e2e-test.sh                      # start the stack, run all 31 specs
+scripts/e2e-test.sh                      # start the stack, run all 33 specs
 scripts/e2e-test.sh --down               # ...and tear it down afterwards
 scripts/e2e-test.sh e2e/a11y.spec.ts     # one spec
 scripts/e2e-stack.sh up|down|env         # manage the stack by hand
@@ -58,7 +58,7 @@ scripts/restart-recovery-test.sh     # worker restart recovery, real Docker
 | Live search (`-m "live_search and not live_models"`) | 9 | **all pass** |
 | Live full lifecycle (`-m live_models`) | 1 | **pass** — 8 model calls, 8 searches |
 | Frontend components (Vitest) | 58 | pass in 4.1 s |
-| Browser end-to-end (Playwright, real stack) | 31 | pass in 1.1 min |
+| Browser end-to-end (Playwright, real stack) | 33 | pass in 1.1 min |
 | ESLint (`--max-warnings 0`) / `tsc -b` | — | clean |
 | Frontend production build | — | succeeds |
 | ruff check + format | — | clean |
@@ -69,6 +69,7 @@ scripts/restart-recovery-test.sh     # worker restart recovery, real Docker
 | pnpm audit | — | clean; no accepted exceptions (the picomatch advisory was withdrawn upstream on 2026-11-18) |
 | `scripts/smoke-test.sh` | — | passes |
 | `scripts/restart-recovery-test.sh` | — | passes against Docker |
+| `scripts/e2e-test.sh` | 33 | passes against Docker |
 
 Backend line coverage: **90%** (2,699 statements, 257 uncovered).
 
@@ -334,7 +335,7 @@ by which batch, and what could not be verified at all.
 
 ## Browser end-to-end tests
 
-31 Playwright specs drive the **real stack** — real API, real arq worker, real
+33 Playwright specs drive the **real stack** — real API, real arq worker, real
 Postgres and Redis — in the offline profile: the deterministic stub model
 adapter and the committed fixture corpus. Nothing on the happy path is mocked,
 so the journey is genuinely executed, and because the profile needs no
@@ -352,7 +353,7 @@ fixture-specific labels.
 | `a11y.spec.ts` | axe-core WCAG 2.1 A/AA on five views, the journey driven by keyboard alone, announced validation errors, every control named |
 | `responsive.spec.ts` | No horizontal page scroll at 390/834/1440 px across all sections, contained table overflow, gate placement on a phone, stacking versus side-by-side |
 | `states.spec.ts` | Loading, empty-with-a-reason, aborted request with a working retry, 500 with correlation id, 429, failed task |
-| `security.spec.ts` | Hostile report content in a real browser; hostile source title and URL; HttpOnly session cookie; `rel="noopener"` on every external link |
+| `security.spec.ts` | Hostile report content in a real browser; hostile source title and URL; HttpOnly session cookie; the security headers and CSP the browser actually received; a clean journey under that policy; `rel="noopener"` on every external link |
 
 Interception is used only in `states.spec.ts` and `security.spec.ts`, for
 responses the real backend will not readily produce. The hostile payloads are
