@@ -142,9 +142,14 @@ Retrieved web content is untrusted input. See `docs/security.md`.
 
 ## Current status
 
-**Milestone: M2 complete — fixture research workflow, approval gate, revision, export
-restrictions, restart recovery and prompt-injection containment.** M3 (live OpenRouter) may
+**Milestone: M5 complete — M6 in progress.** Shipped so far: the fixture research workflow
+with approval, revision and export restrictions (M2); the live OpenRouter gateway on a
+free-model profile (M3); live Tavily search, URL safety, rate limiting and retention (M4); the
+browser-verified review interface with a CSP and accessibility coverage (M5). A milestone may
 not begin without the repository owner's approval.
+
+Each milestone has a report under `docs/milestones/` recording what was verified and what was
+not. Keep this section current: it was three milestones stale when M6 audited it.
 
 Default configuration is offline: `LLM_PROVIDER=stub`, `SEARCH_PROVIDER=fixture`. Output is
 deterministic fixture content and must be labelled as such everywhere it appears.

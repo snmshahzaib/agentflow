@@ -1,115 +1,135 @@
 # AgentFlow
 
-**Human-in-the-loop multi-agent research orchestrator.** Submit a research question, watch
-specialised agents plan it, retrieve evidence, check every claim against its sources, and
-approve the report before it can be exported.
+**A human-in-the-loop research orchestrator that refuses to assert what it cannot cite.**
 
-> **Status: in active development — Milestone 5 of 8.**
-> This README documents what is *implemented*, not what is planned. The status table below is
-> the authoritative list. Nothing here claims to be production-tested, and no live deployment
-> exists yet.
+Submit a research question. Five graph stages plan it, retrieve evidence, synthesise findings,
+check every claim against the sources actually retrieved, and draft a report. The workflow then
+**pauses for a human** — and nothing can be exported until a reviewer approves it.
+
+> **Status: in active development — Milestone 6 of 8.** Everything documented here is
+> implemented and verified; the status table below says what is not. The application has never
+> run anywhere but a local Docker host.
+
+![The review interface at the approval gate](docs/screenshots/02-report.png)
+
+*The actual application. The amber banner is not decoration: this run used the deterministic
+stub adapter and the committed fixture corpus, and the UI says so rather than presenting
+fixture output as AI research.*
 
 ---
 
 ## The problem
 
-An analyst comparing options across the public web repeats the same unpaid work every time:
-decompose the question, search, skim, track which source actually said what, and assemble
-something a colleague will trust. A chatbot answer collapses all of that into one opaque
-paragraph — the sub-questions, the sources consulted, the claims that *weren't* supported, and
-the decision to publish all disappear.
+An LLM asked to research something will produce a confident, well-formatted answer whether or
+not it has grounds for one. The failure is not that the prose is bad — it is that a reader
+cannot tell which sentences are supported, which are extrapolated, and which are invented. For
+anything consequential, a person has to re-do the work to find out.
 
-AgentFlow makes each of those steps a durable, inspectable artifact, and puts a human approval
-gate in front of publication.
+Two things follow. Automation should make the *grounding* inspectable rather than hiding it
+behind fluent output, and a human should remain in the loop at the point where a decision is
+actually made.
 
-## How it works
+## The solution
+
+AgentFlow treats a claim with no retrievable source as a defect to surface, not an
+embarrassment to smooth over.
+
+- **Every claim is bound to evidence that was actually retrieved.** The model emits citation
+  labels; our code re-resolves them against the sources in the database, drops anything that
+  does not resolve, and **downgrades a "supported" verdict with no resolvable source to
+  "unsupported"**. A model cannot invent a citation that survives.
+- **The report discloses its own limits.** Source count, subtasks, unsupported claims, which
+  model wrote it, which provider retrieved the sources, and the spend — all generated from the
+  run's own rows, so the prose cannot drift from what happened.
+- **A human approves before anything leaves.** The graph interrupts and the job *ends* — no
+  process sits waiting — and export returns 409 until a reviewer approves.
+- **Nothing is called verified.** Claim checking establishes that a retrieved source *states* a
+  claim. It is not a fact check, and the system says so in the UI, in the report and in these
+  docs.
+
+How well does that work? With a wide evidence set the pipeline supports 80% of its claims; when
+retrieval returns a single source, **it declines to support 80% of them** — while citation
+integrity stays at 100%. Those numbers come from a [reproducible evaluation](#evaluation), and
+they measure the grounding pipeline, not a model's intelligence.
+
+## Key engineering capabilities
+
+| | |
+|---|---|
+| **Durable human-in-the-loop** | LangGraph `interrupt()` plus a Postgres checkpointer. The pause consumes no compute and survives a restart of every process. |
+| **Provider-agnostic LLM gateway** | One OpenAI-compatible port, OpenRouter by default. No model ID appears in application code; each stage's model resolves from an environment variable and is validated against the provider catalogue at startup. |
+| **Negotiated structured output** | Three tiers (native JSON Schema → forced tool call → prompt-and-parse). Strict mode refuses anything below tier one rather than silently degrading. |
+| **Crash recovery** | A short-TTL Redis lock with a heartbeat, plus a sweep that re-queues tasks whose worker died. Verified by SIGKILLing a worker mid-run in Docker. |
+| **Idempotency** | `UNIQUE(task_id, node, attempt)`, report versions derived from the revision round, and an `Idempotency-Key` on submission. A re-delivered job is harmless. |
+| **Prompt-injection containment** | Retrieved content is fenced as data, the model gets no tools, output is schema-validated, and citations are re-bound. Tested by driving a *deliberately compromised* model that obeys the injected instruction — it still cannot self-approve, and its fabricated citations still do not resolve. |
+| **Enforced architecture** | `import-linter` fails the build if a layer or a vendor SDK leaks across its boundary. |
+| **Cost control** | Per-task token, call and search ceilings checked before each request, and a free-models-only mode that refuses any model with non-zero published pricing. |
+
+## Architecture
 
 ```mermaid
-flowchart LR
-  subgraph Browser
-    UI[React + TypeScript]
-  end
-  subgraph API["API process (FastAPI)"]
-    R[Routers] --> SVC[Services]
-  end
-  subgraph WORK["Worker process (arq)"]
-    J[Job handler] --> G[LangGraph StateGraph]
-    G --> N1[plan] --> N2[research] --> N3[analyse] --> N4[citation check] --> N5[draft]
-  end
-  UI -->|REST + polling| R
-  SVC -->|enqueue / resume| Q[(Redis)]
-  Q --> J
-  SVC --> DB[(PostgreSQL)]
-  J --> DB
-  N2 --> SA[Search port: fixture / Tavily]
-  N1 & N3 & N4 & N5 --> LA[LLM port: stub / OpenRouter]
-  G -.checkpoints.-> DB
+flowchart TB
+    subgraph browser["Browser"]
+        UI["React 19 dashboard<br/>polling, no SSE"]
+    end
+
+    subgraph api["API process — uvicorn"]
+        RT["Routers"] --> RL["Rate limiter"]
+        RT --> SV["Services<br/>transaction boundaries"]
+    end
+
+    subgraph worker["Worker process — arq"]
+        JB["Job handler"] --> LK["Single-flight lock<br/>TTL + heartbeat"]
+        LK --> GR["LangGraph runner"]
+        GR --> ND["plan → research → analyse<br/>→ citation_check → draft"]
+        CRON["Cron: orphan sweep,<br/>retention"]
+    end
+
+    subgraph ports["Outbound ports"]
+        LLM["LLM port<br/>stub | OpenAI-compatible"]
+        SRCH["Search port<br/>fixture | Tavily"]
+    end
+
+    PG[("PostgreSQL<br/>domain rows +<br/>graph checkpoints")]
+    RDS[("Redis<br/>queue, locks,<br/>rate limits")]
+
+    UI -->|REST| RT
+    SV --> PG
+    SV -->|enqueue| RDS
+    RDS --> JB
+    ND --> PG
+    ND --> LLM
+    ND --> SRCH
+    GR -.checkpoint.-> PG
+    CRON --> PG
+    RL --> RDS
+    LLM --> GW["OpenRouter<br/>(or any OpenAI-compatible gateway)"]
+    SRCH --> TV["Tavily"]
 ```
 
-Five nodes, each a single schema-validated LLM call over text the system already holds:
+**One codebase, two process types.** The API validates, persists and enqueues; it never calls a
+model, because a research run takes minutes and a request handler must not hold one. The worker
+owns every model and search call, and a task's rows are written only by the worker holding its
+lock — exactly one writer per task.
 
-| Node | Responsibility |
-|---|---|
-| `plan` | Decompose the question into at most `MAX_SUBTASKS` bounded subtasks |
-| `research` | Retrieve sources per subtask through the configured search port (**no LLM call**) |
-| `analyse` | Synthesise findings, each tied to retrieved sources |
-| `citation_check` | Adjudicate whether each claim is supported by a retrieved source |
-| `draft` | Produce the report with citations and a generated limitations section |
-
-Three limits are enforced **after** the model returns rather than merely requested in the
-prompt: the subtask count is truncated, source references are resolved against sources
-actually retrieved (anything that does not resolve is dropped), and a `supported` verdict
-with no resolvable source is downgraded to `unsupported`.
-
-Then the graph **interrupts**. The job ends — no process sits waiting — and the task rests in
-`awaiting_approval` until a human approves or requests a revision, at which point a resume job
-continues the graph from its checkpoint.
-
-### Two design decisions worth calling out
-
-**The model never gets internet access.** Our code performs the search; each node is one
+**The model never gets internet access.** Our code performs the search; each stage is one
 structured-output call over text we already hold. The *graph* is the agent, not a tool-calling
-loop. This removes an entire class of runaway-agent and SSRF failure modes.
+loop, which removes a class of runaway-agent and SSRF failure modes rather than mitigating it.
 
-**Retrieved web content is untrusted input.** It is delimited and labelled as data, the model
-has no tools at synthesis time, every node returns a schema-validated object, and citation
-identifiers are re-bound against the sources actually retrieved — a model cannot invent a
-citation that survives.
+Full detail, including end-to-end and recovery sequence diagrams:
+[`docs/architecture.md`](docs/architecture.md).
 
-The corpus contains a red-team document carrying an injected directive, and it is genuinely
-retrieved on the demo query. The test suite drives a **deliberately compromised model** that
-obeys that directive completely: it still cannot self-approve the report, its fabricated
-citations do not resolve, its "mark everything supported" verdicts are downgraded, and the
-limitations section still reports the truth.
+### The workflow
 
-This is **containment, not prevention.** Whether a model obeys an injected instruction is a
-property of that model; this project does not measure it and claims nothing about it. See
-[`docs/security.md`](docs/security.md).
+| Stage | Does | Calls a model |
+|---|---|---|
+| `plan` | Breaks the question into at most `MAX_SUBTASKS` bounded subtasks | yes |
+| `research` | Retrieves sources per subtask, normalises and deduplicates URLs | **no** |
+| `analyse` | Synthesises findings, each tied to retrieved sources | yes |
+| `citation_check` | Adjudicates whether a retrieved source states each claim | yes |
+| `draft` | Writes the report, citations and a generated limitations section | yes |
 
-### Live web search
-
-With `SEARCH_PROVIDER=tavily` the research node retrieves real pages. Three things are worth
-knowing about how it behaves:
-
-- **URLs are canonicalised before storage.** Tracking parameters, fragments, default ports
-  and host case are stripped, and the `url_sha256` digest is taken from that canonical form,
-  so two links to the same page become one source rather than two citations.
-- **Unsafe URLs are rejected, not repaired.** Scheme allowlist, no embedded credentials, no
-  loopback, private, link-local or cloud-metadata addresses, no bare hostnames.
-- **A failed search fails its subtask and nothing else.** The failure is counted and
-  disclosed in the report's limitations; it is *never* backfilled from the fixture corpus.
-  Only if every subtask fails does the task fail.
-
-Operational guards: `SEARCH_MAX_PER_TASK` caps searches per task so a runaway plan costs one
-task rather than the month's allowance, write endpoints are rate-limited per session, and a
-nightly sweep deletes research content past `DATA_RETENTION_DAYS`.
-
-## Honest terminology
-
-The `citation_check` node verifies **that a claim points to a retrieved source**. It does not
-verify that the claim is true. AgentFlow makes no factual-accuracy guarantee, and the report's
-limitations section is generated from actual run data (search mode, model served per node,
-source count, unsupported-claim count, token spend) so it cannot drift from reality.
+Then the graph interrupts and waits for a person.
 
 ## Technology
 
@@ -120,15 +140,185 @@ source count, unsupported-claim count, token spend) so it cannot drift from real
 | Worker / queue | arq over Redis |
 | Database | PostgreSQL, SQLAlchemy 2.0 async, Alembic |
 | LLM | Provider-agnostic OpenAI-compatible gateway; OpenRouter by default |
-| Search | Pluggable port: offline fixtures (default) or Tavily |
-| Frontend | React 19, TypeScript, Vite, Tailwind, TanStack Query |
+| Search | Pluggable port: committed fixtures (default) or Tavily |
+| Frontend | React 19, TypeScript, Vite, Tailwind v4, TanStack Query |
 | Quality | ruff, mypy, import-linter, pytest, Vitest, Playwright, axe-core, gitleaks |
 
-**No model ID appears in application code.** Every model is resolved from environment
-variables and validated against the provider catalogue at startup — see
-[`docs/model-configuration.md`](docs/model-configuration.md).
+## Quick start
 
-## Implementation status
+Prerequisites: Docker Desktop, and [uv](https://docs.astral.sh/uv/) plus
+[pnpm](https://pnpm.io/) for work outside containers.
+
+```bash
+git clone https://github.com/snmshahzaib/agentflow.git
+cd agentflow
+cp .env.example .env     # works as-is; no credentials needed
+docker compose up --build
+```
+
+| Service | URL |
+|---|---|
+| Dashboard | http://localhost:8080 |
+| API docs | http://localhost:8000/docs |
+| Readiness | http://localhost:8000/ready |
+
+**No API keys at all are required.** The default configuration — `LLM_PROVIDER=stub`,
+`SEARCH_PROVIDER=fixture` — runs the complete workflow against a deterministic stub adapter and
+a committed corpus of synthetic documents. The whole system, including approval, revision,
+export restrictions, crash recovery and injection containment, is exercisable by anyone who
+clones the repository, with no spend.
+
+Every published port is configurable in `.env` (`API_PORT`, `FRONTEND_PORT`,
+`POSTGRES_HOST_PORT`, `REDIS_HOST_PORT`), which matters if you already run Postgres or Redis
+locally.
+
+<details>
+<summary><strong>Running with live providers</strong></summary>
+
+Set `LLM_PROVIDER=openrouter` with `LLM_API_KEY`, and/or `SEARCH_PROVIDER=tavily` with
+`SEARCH_API_KEY`. To run real models without spending anything, use the free development
+profile documented in [`docs/model-configuration.md`](docs/model-configuration.md):
+`LLM_FREE_MODELS_ONLY=true` refuses any model with non-zero published pricing, at startup and
+before every call, so a billable request cannot be made by accident.
+
+Free endpoints are slow, rate-limited, and materially weaker; they exist to exercise the
+workflow, not to produce output worth relying on. No security control or structured-output
+requirement is relaxed to accommodate them.
+
+</details>
+
+## The demo workflow
+
+1. **Submit a question.** Client-side validation refuses something too short before a round
+   trip; the API returns `202` with a `Location` header and queues the work.
+2. **Watch it run.** The dashboard polls and names the current stage — "Stage 2 of 5: Retrieve
+   sources" — with every stage, its duration and any retries in the Workflow tab.
+3. **Read the evidence.** Sources carry the label used in the report's citations and state
+   whether each was retrieved live or came from the fixture corpus. Claims carry a support
+   verdict and the sources behind it.
+4. **Decide.** Approve, or send it back with a note. A revision re-plans the research — it may
+   retrieve different sources — and produces a new version while keeping the old one readable.
+5. **Export.** Markdown download unlocks only after approval.
+
+| | |
+|---|---|
+| ![Claim support](docs/screenshots/03-claim-support.png) | ![Workflow timeline](docs/screenshots/05-workflow.png) |
+| **Claim support.** Counted by verdict, with the wording that this shows a source *states* a claim, not that it is true. | **Workflow timeline.** Every stage in order, including ones not yet reached; retries stay visible rather than being overwritten. |
+| ![Retrieved sources](docs/screenshots/04-sources.png) | ![Two report versions](docs/screenshots/07-revision-versions.png) |
+| **Sources.** Each labelled as it appears in citations, with live-versus-fixture stated per source. | **Versions.** A revision supersedes its predecessor without deleting it; both stay readable. |
+
+The exported Markdown is the document the reviewer approved, and
+[the raw source is one click away](docs/screenshots/06-markdown-source.png) so what is approved
+is what ships.
+
+## Testing and verification
+
+Everything below is a measured result from a real run, not an estimate.
+
+| Suite | Count | Notes |
+|---|---|---|
+| Backend unit | 282 | no database needed |
+| Backend integration | 137 | real Postgres and Redis |
+| **Backend total** | **419** | 90% line coverage (2,699 statements) |
+| Frontend components | 58 | Vitest + Testing Library |
+| Browser end-to-end | 34 | Playwright against the **real stack**; Chromium, plus the critical journey on Firefox |
+| Accessibility | — | axe-core: **zero** WCAG 2.1 A/AA violations across five views |
+| Grounding evaluation | 7 cases | all invariants hold; see below |
+| Live provider | 20 | skipped without credentials; evidence preserved from M3/M4 |
+
+```bash
+docker compose up -d postgres redis
+
+scripts/with-services.sh uv run pytest        # backend
+cd frontend && pnpm test && pnpm lint         # frontend
+scripts/e2e-test.sh                           # 34 browser tests, real stack
+scripts/smoke-test.sh http://localhost:8080   # submit → gate → approve
+scripts/restart-recovery-test.sh http://localhost:8080   # kill the worker, prove recovery
+make verify                                   # lint, types, boundaries, tests
+```
+
+`scripts/with-services.sh` derives connection strings from the running containers, so the
+documented commands work from a clean checkout rather than assuming a local Postgres.
+
+The browser suite drives the **real** API, worker, Postgres and Redis in the offline profile —
+nothing on the happy path is mocked. It covers the full journey through to the bytes of the
+downloaded Markdown, keyboard-only operation, hostile report content in a real engine, and
+layout at three viewports.
+
+### Evaluation
+
+A deterministic harness scores the grounding pipeline across seven cases
+([`docs/evaluation-baseline.json`](docs/evaluation-baseline.json)):
+
+```
+case                    src  clm   cite   grnd   uniq  unsup   util
+broad_evidence            9    5   100%   100%   100%    20%    44%
+single_subject            5    5   100%   100%   100%    20%    80%
+scarce_evidence           1    5   100%   100%   100%    80%   100%
+no_methodology            1    5   100%   100%   100%    80%   100%
+off_corpus                2    5   100%   100%   100%    60%   100%
+injected_evidence         5    5   100%   100%   100%    20%    80%
+duplicate_pressure        5    5   100%   100%   100%    20%    80%
+```
+
+As evidence shrinks from nine sources to one, the share of claims the system declines to
+support rises from 20% to 80% — while **citation resolution and grounded support never leave
+100%**. That is the design working: a claim citing `S4` when retrieval returned one source is
+downgraded, not asserted.
+
+**This measures the grounding pipeline, not model quality.** On the offline profile the model
+is the deterministic stub, whose claims are fixed; what varies per case is the evidence. No
+figure here says anything about a live model's output.
+
+## Security
+
+Full detail in [`docs/security.md`](docs/security.md).
+
+- **Retrieved content is untrusted input.** It is fenced and labelled as data, never placed in
+  a system prompt, and the model is offered no tools at synthesis time.
+- **URLs are never dereferenced server-side.** The search provider returns excerpts; we use
+  them. That removes the SSRF surface rather than mitigating it.
+- **Validation rejects, it does not repair.** Scheme allowlist, no embedded credentials, no
+  loopback, private, link-local or cloud-metadata hosts. Canonicalisation is a separate
+  function with a separate purpose.
+- **The report is rendered as hostile input.** No raw HTML is parsed, only safe URL schemes
+  become links, and every external link carries `rel="noopener noreferrer"` — pinned by
+  seventeen component tests and six browser tests, because each property is a library default
+  a change could silently remove.
+- **A strict CSP** with no `unsafe-inline` and no `unsafe-eval`, plus `nosniff`, `DENY` framing
+  and a referrer policy. A browser test drives the whole journey under the policy and fails on
+  any violation.
+- **Secrets never enter the repository.** gitleaks runs pre-commit and in CI over full history;
+  only `*.example` files are tracked.
+
+**Injection is contained, not prevented.** Whether a model obeys an injected instruction is a
+property of that model; this project does not measure it and claims nothing about it. What is
+tested is that obedience does not help: a compromised model still cannot self-approve, its
+fabricated citations still do not resolve, and the limitations section still reports the truth.
+
+## Known limitations
+
+Stated because a portfolio project that lists none is not being honest.
+
+- **Not deployed.** It has run only on a local Docker host. Five gates must be cleared before
+  any public deployment — access control, a daily spend ceiling, per-session task limits, rate
+  limiting reviewed under real traffic, and hosted secret handling. Three of those are
+  currently settings that do nothing, and are labelled as such in the code, in `.env.example`
+  and in the docs.
+- **No performance or load figures.** None are measured, so none are claimed.
+- **Live evidence is from free models only.** The paid profile is implemented, disabled and
+  untested. Free preview models are materially weaker, and the live results were produced with
+  them.
+- **Claim checking is not fact checking.** It establishes that a retrieved source states a
+  claim. A wrong source yields a wrong claim marked "supported".
+- **No screen-reader testing.** axe-core checks the semantics are present; nobody has driven
+  the app with VoiceOver or NVDA.
+- **Single browser engine for most tests.** Chromium runs all 33 specs; Firefox runs the
+  critical journey only.
+- **Retention has never deleted a real expired task.** The sweep is implemented, scheduled and
+  tested, but nothing in any environment is yet seven days old.
+
+## Project status
 
 | Milestone | Scope | Status |
 |---|---|---|
@@ -136,120 +326,27 @@ variables and validated against the provider catalogue at startup — see
 | M2 | Fixture research workflow, approval gate, restart recovery | complete |
 | M3 | Live OpenRouter gateway, free profile, cost ledger | complete |
 | M4 | Live Tavily search, URL safety, rate limits, retention | complete |
-| M5 | Review UI, browser end-to-end tests, accessibility | **complete — awaiting review** |
-| M6 | Verification, documentation, evaluation harness | not started |
+| M5 | Review UI, browser end-to-end tests, accessibility | complete |
+| M6 | Documentation, verification, evaluation harness | **in progress** |
 | M7 | Deployment and public repository | not started |
 | M8 | Completion report | not started |
 
-## What exists today (end of M5)
-
-The complete research workflow runs end to end and is verified in Docker: submit a question,
-and the five nodes plan it, retrieve sources, synthesise findings, check each claim against
-those sources, and draft a report with citations and a generated limitations section. The
-workflow then pauses; a reviewer can read the report, send it back with a note, or approve
-it — and only an approved report can be exported.
-
-**With live providers configured, the research is real.** A verified run retrieved 17
-sources from the public web through Tavily, produced a report with 48 citation links — none
-of which resolved to anything outside the sources actually retrieved — went through a
-revision round and was approved and exported. Full evidence:
-[`docs/milestones/m4-report.md`](docs/milestones/m4-report.md).
-
-**With the default configuration, results are deterministic fixture output, not AI
-research.** `LLM_PROVIDER=stub` and `SEARCH_PROVIDER=fixture` run a stub model adapter
-against a committed corpus of synthetic documents: no language model is called and no web
-search happens. Every report carries a notice saying which combination produced it — the
-notice is derived from the sources actually stored, not from configuration — every source is
-labelled, and the API reports `offline_mode: true`.
-
-What that buys: the whole system — including approval, revision, export restrictions,
-restart recovery and prompt-injection containment — is exercisable by anyone who clones the
-repository, with no API keys and no spend.
-
-**Retrieved is not verified.** Claim checking establishes that a retrieved source *states*
-a claim. It is not a fact check, and it offers no protection against a source being wrong.
-Reports say so in their own limitations section.
-
-### The review interface
-
-The dashboard is built around the decision a reviewer has to make. A task has its own URL, so
-a reviewer can link a colleague to exactly what they are looking at; the approval gate sits
-above the evidence rather than below it; and the evidence is tabbed — report, sources, claims,
-workflow — rather than stacked into one long scroll.
-
-The report is rendered as a document, with its claim-support table as a real table and the
-exact Markdown that will be exported one click away. Report content is model-written text
-quoting retrieved pages, so it is **rendered as hostile input**: no raw HTML, an explicit
-`http`/`https`/`mailto` allowlist so a `javascript:` href cannot become clickable, and
-`rel="noopener noreferrer"` on every link.
-
-Verified rather than asserted: **33 Playwright specs** drive the real stack — including the
-whole lifecycle through to checking the bytes of the downloaded Markdown — with **zero
-WCAG 2.1 A/AA violations** from axe-core across five views, the journey driven by keyboard
-alone, and no horizontal page scroll at 390, 834 or 1440 px.
-
-## Quick start
-
-Prerequisites: Docker Desktop, and [uv](https://docs.astral.sh/uv/) for backend work outside
-containers.
-
-```bash
-cp .env.example .env          # then edit .env — it is gitignored
-docker compose up --build
-```
-
-| Service | URL |
-|---|---|
-| Frontend | http://localhost:8080 |
-| API docs | http://localhost:8000/docs |
-| Readiness | http://localhost:8000/ready |
-
-AgentFlow runs with **no API keys at all** in its default configuration: `LLM_PROVIDER=stub`
-and `SEARCH_PROVIDER=fixture` give a fully deterministic offline demo. Fixture and stub output
-is labelled as such in the UI and is never presented as live AI.
-
-To run real models without spending anything, use the **free development profile** — see
-[`docs/model-configuration.md`](docs/model-configuration.md). `LLM_FREE_MODELS_ONLY=true`
-refuses any model with non-zero published pricing, at startup and before every call, so a
-billable request cannot be made by accident. Free endpoints are slow and rate-limited and
-their analysis quality is materially weaker; they exist to exercise the workflow, not to
-produce output worth relying on. No security control or structured-output requirement is
-relaxed to accommodate them.
-
-Every published host port is configurable in `.env` (`API_PORT`, `FRONTEND_PORT`,
-`POSTGRES_HOST_PORT`, `REDIS_HOST_PORT`), which matters if you already run Postgres or Redis
-locally — a clash shows up as `Bind for 127.0.0.1:5433 failed: port is already allocated`.
-
-Verify the whole stack end to end:
-
-```bash
-scripts/smoke-test.sh http://localhost:8080            # submit -> gate -> approve
-scripts/restart-recovery-test.sh http://localhost:8080 # kill the worker, prove recovery
-scripts/e2e-test.sh                                    # 33 browser tests, real stack
-```
-
-The first submits a task, waits for the approval gate, approves it, and checks idempotency,
-double-approval rejection and session scoping. The second restarts the worker mid-flight and
-again while the task is parked at the gate, then exercises revision, approval and export —
-asserting that no step, source or report is duplicated. Each prints `PASSED` or exits
-non-zero.
-
-See [`docs/development.md`](docs/development.md) for running the API, worker and frontend
-outside Docker, and [`docs/testing.md`](docs/testing.md) for the test commands.
+Each milestone has a report in [`docs/milestones/`](docs/milestones/) recording what was
+verified, what was not, and what went wrong.
 
 ## Documentation
 
 | Document | Contents |
 |---|---|
-| [`docs/architecture.md`](docs/architecture.md) | Components, boundaries, process model |
-| [`docs/model-configuration.md`](docs/model-configuration.md) | Model matrix, capability validation, costs |
+| [`docs/architecture.md`](docs/architecture.md) | Components, boundaries, process model, sequence diagrams |
 | [`docs/data-model.md`](docs/data-model.md) | Entities, relationships, indexes |
 | [`docs/api.md`](docs/api.md) | Endpoints, schemas, errors |
-| [`docs/security.md`](docs/security.md) | Trust boundaries, injection defence, secret handling |
-| [`docs/testing.md`](docs/testing.md) | Test categories and verified results |
-| [`docs/decisions.md`](docs/decisions.md) | Architecture decision records |
-| [`docs/milestones/m4-report.md`](docs/milestones/m4-report.md) | Live web research: what was verified, and what was not |
-| [`docs/milestones/m5-report.md`](docs/milestones/m5-report.md) | The review interface, browser tests and accessibility |
+| [`docs/model-configuration.md`](docs/model-configuration.md) | Model matrix, capability validation, costs |
+| [`docs/security.md`](docs/security.md) | Trust boundaries, injection containment, deployment gates |
+| [`docs/testing.md`](docs/testing.md) | Every suite, what it asserts, and the gaps |
+| [`docs/evaluation.md`](docs/evaluation.md) | The grounding harness and how to run it |
+| [`docs/decisions.md`](docs/decisions.md) | 20 architecture decision records |
+| [`docs/development.md`](docs/development.md) | Running outside Docker |
 
 ## Licence
 

@@ -46,6 +46,7 @@ export default defineConfig({
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 860 } },
+      testMatch: /\.spec\.ts$/,
     },
     {
       // Firefox runs the critical journey only, not the whole suite.
@@ -59,6 +60,14 @@ export default defineConfig({
       name: 'firefox',
       use: { ...devices['Desktop Firefox'], viewport: { width: 1280, height: 860 } },
       testMatch: /journey\.spec\.ts/,
+    },
+    {
+      // Documentation screenshots, not tests. Run explicitly:
+      //   scripts/capture-screenshots.sh
+      // Kept out of the default run because it writes files into docs/.
+      name: 'screenshots',
+      use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 900 } },
+      testMatch: /\.capture\.ts$/,
     },
   ],
 })

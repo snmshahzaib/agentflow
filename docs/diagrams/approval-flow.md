@@ -17,16 +17,16 @@ sequenceDiagram
   W->>R: claim job, acquire single-flight lock(task_id)
   W->>D: status=running
   loop each graph node
-    W->>D: BEGIN; workflow_step + domain rows + llm_call + checkpoint; COMMIT
+    W->>D: one transaction - workflow_step, domain rows, llm_call, checkpoint
   end
   W->>D: status=awaiting_approval
-  Note over W,R: interrupt() — the job ENDS here. No process waits.
+  Note over W,R: interrupt() - the job ENDS here. No process waits.
   U->>A: POST /api/tasks/{id}/approve
   A->>D: approval_event, status=approved
   A->>R: enqueue resume_task(task_id)
   W->>D: load checkpoint, resume with the decision
   U->>A: GET /api/tasks/{id}/export
-  A-->>U: 200 Markdown  (409 if not approved)
+  A-->>U: 200 Markdown (409 if not approved)
 ```
 
 Restart recovery is a demo step, not a disclaimer: `docker compose restart worker` mid-run

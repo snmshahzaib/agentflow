@@ -105,6 +105,17 @@ jobs:
       - name: Tests
         run: uv run pytest --cov=app --cov-report=term-missing
 
+      - name: Grounding evaluation
+        # Deterministic: stub model, fixture corpus, no credentials, no spend.
+        # Exits non-zero if a grounding invariant fails.
+        run: uv run python scripts/run_evals.py --no-write
+
+      - name: Documentation audit
+        working-directory: .
+        # Broken links, missing scripts, undocumented settings, stale test
+        # counts. Needs no services.
+        run: python3 scripts/audit-docs.py
+
   frontend:
     name: Frontend (lint, types, tests, build)
     runs-on: ubuntu-latest
@@ -139,6 +150,11 @@ jobs:
 
       - name: Production build
         run: pnpm build
+
+      - name: Documentation diagrams
+        # A broken Mermaid block does not fail any build -- it renders as an
+        # error box on GitHub. One had been broken since M1.
+        run: pnpm check:diagrams
 
   e2e:
     name: Browser end-to-end (real stack, offline profile)

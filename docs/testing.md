@@ -3,13 +3,17 @@
 Every number on this page came from a run on 2026-11-18. Nothing here is
 projected or aspirational; where coverage is missing, it says so.
 
+`scripts/audit-docs.py` checks the counts on this page against what the suites
+actually collect, so a stale figure fails CI rather than sitting here looking
+authoritative.
+
 ## Commands
 
 ```bash
 cd backend
-uv run pytest                        # all 408 offline tests (20 live ones skip)
-uv run pytest -m "not integration"   # 274 tests, no Postgres or Redis needed
-uv run pytest -m integration         # 134 tests, needs Postgres + Redis
+uv run pytest                        # all 419 offline tests (20 live ones skip)
+uv run pytest -m "not integration"   # 282 tests, no Postgres or Redis needed
+uv run pytest -m integration         # 137 tests, needs Postgres + Redis
 uv run pytest --cov=app --cov-report=term
 uv run pytest tests/test_llm_registry.py::TestStubRuntime -q   # one class
 ```
@@ -35,7 +39,7 @@ Browser end-to-end tests drive the **real stack** in its offline profile, so
 they need it running. The runner does both:
 
 ```bash
-scripts/e2e-test.sh                      # start the stack, run all 33 specs
+scripts/e2e-test.sh                      # start the stack, run all 34 specs
 scripts/e2e-test.sh --down               # ...and tear it down afterwards
 scripts/e2e-test.sh e2e/a11y.spec.ts     # one spec
 scripts/e2e-stack.sh up|down|env         # manage the stack by hand
@@ -51,14 +55,14 @@ scripts/restart-recovery-test.sh     # worker restart recovery, real Docker
 
 | Suite | Count | Result |
 |---|---|---|
-| Backend unit (`-m "not integration"`) | 274 | pass in 7.6 s |
-| Backend integration (Postgres + Redis) | 134 | pass in 35.9 s |
-| **Backend total (offline)** | **408** | **pass** (20 live tests skipped) |
+| Backend unit (`-m "not integration"`) | 282 | pass in 8.9 s |
+| Backend integration (Postgres + Redis) | 137 | pass in 91.9 s |
+| **Backend total (offline)** | **419** | **pass** (20 live tests skipped) |
 | Live models (`-m live`, free profile) | 10 | **all pass**, $0.00 spend |
 | Live search (`-m "live_search and not live_models"`) | 9 | **all pass** |
 | Live full lifecycle (`-m live_models`) | 1 | **pass** — 8 model calls, 8 searches |
 | Frontend components (Vitest) | 58 | pass in 4.1 s |
-| Browser end-to-end (Playwright, real stack) | 33 | pass in 1.1 min |
+| Browser end-to-end (Playwright, real stack) | 34 | Chromium (33) + the critical journey on Firefox (1) |
 | ESLint (`--max-warnings 0`) / `tsc -b` | — | clean |
 | Frontend production build | — | succeeds |
 | ruff check + format | — | clean |
@@ -335,7 +339,7 @@ by which batch, and what could not be verified at all.
 
 ## Browser end-to-end tests
 
-33 Playwright specs drive the **real stack** — real API, real arq worker, real
+34 Playwright specs drive the **real stack** — real API, real arq worker, real
 Postgres and Redis — in the offline profile: the deterministic stub model
 adapter and the committed fixture corpus. Nothing on the happy path is mocked,
 so the journey is genuinely executed, and because the profile needs no
@@ -373,6 +377,40 @@ Both of these were real defects, not test friction:
 - **The page scrolled sideways by 7 px on a phone.** The single-column grid
   was `auto`-sized, so a long unbroken URL inside a card set the column's
   min-content width.
+
+## Grounding evaluation
+
+Seven cases scored against three invariants and two observations, on the
+deterministic offline profile. Full description, including what it does *not*
+measure: [`evaluation.md`](evaluation.md).
+
+```bash
+scripts/with-services.sh uv run python scripts/run_evals.py
+```
+
+Eleven tests in `test_evaluation.py` enforce it: eight prove each metric can
+actually fail (a metric that cannot fail measures nothing), three run the
+suite through the real graph.
+
+## Documentation audit
+
+```bash
+python3 scripts/audit-docs.py        # no services needed
+```
+
+Checks the claims that can be checked mechanically: every relative link
+resolves, every documented script exists and is executable, `.env.example`
+documents every settings field and no field that has been removed, and the
+test counts quoted in the living documents match what the suites collect.
+
+Milestone reports are deliberately exempt from the count check. Each is a
+record of what was true at that milestone, and a figure that has since moved
+on is history, not an error.
+
+It found three real problems on its first run: a Mermaid diagram that had been
+broken since M1 and had never rendered on GitHub, a repository contract still
+claiming "M2 complete" three milestones later, and stale test counts in this
+file.
 
 ## Known gaps
 

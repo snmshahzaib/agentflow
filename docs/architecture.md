@@ -1,7 +1,8 @@
 # Architecture
 
 > Diagrams describe the **implemented** system. Components not yet built are absent, not drawn
-> as planned. Current milestone: M1.
+> as planned. Verified against the code at M6; every box, arrow and table row below corresponds
+> to something that runs.
 
 ## Process model
 
@@ -95,6 +96,71 @@ only requested in the prompt:
 - a `supported` or `partial` verdict with no resolvable source is downgraded
   to `unsupported`.
 
+### A task, end to end
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor R as Reviewer
+    participant UI as React dashboard
+    participant API as FastAPI
+    participant DB as PostgreSQL
+    participant Q as Redis (arq)
+    participant W as arq worker
+    participant G as LangGraph
+    participant S as Search port
+    participant M as LLM gateway
+
+    R->>UI: research question
+    UI->>API: POST /api/tasks
+    API->>API: rate limit (per session, per endpoint)
+    API->>DB: INSERT research_tasks (queued)
+    API->>Q: enqueue run_task(id)
+    API-->>UI: 202 Accepted + Location
+
+    Q->>W: run_task(id)
+    W->>Q: acquire single-flight lock (TTL + heartbeat)
+    W->>G: ainvoke(state, thread_id=task_id)
+
+    G->>M: plan
+    M-->>G: subtasks (schema-validated, truncated to MAX_SUBTASKS)
+    loop per subtask
+        G->>S: search(query)
+        S-->>G: results
+    end
+    G->>DB: INSERT sources (normalised URL, deduped by digest)
+    G->>M: analyse
+    G->>M: citation_check
+    M-->>G: verdicts (unresolvable refs dropped, orphan support downgraded)
+    G->>M: draft
+    G->>DB: INSERT reports, report_claims, claim_sources
+    G->>DB: checkpoint (langgraph schema)
+    G-->>W: interrupt()
+    W->>DB: status = awaiting_approval
+    W->>Q: release lock
+    Note over W,Q: the job ends — no process waits on the human
+
+    loop every 1.5s while active
+        UI->>API: GET /api/tasks/{id}, /steps
+        API->>DB: read
+    end
+
+    R->>UI: approve
+    UI->>API: POST /api/tasks/{id}/approve
+    API->>DB: INSERT approval_events, status = approved
+    API->>Q: enqueue resume_task(id, decision)
+    Q->>W: resume_task
+    W->>G: ainvoke(Command(resume=decision))
+    G->>DB: checkpoint, run ends
+    R->>UI: download Markdown
+    UI->>API: GET /api/tasks/{id}/export
+    API-->>UI: 200 (409 before approval)
+```
+
+A revision follows the same path, except the resume command carries
+`request_revision`, the graph re-enters at `plan`, and the run ends at the gate
+again with a new report version.
+
 ### Revision
 
 A reviewer sending a report back re-enters the graph at `plan`, not at
@@ -107,15 +173,81 @@ counter. That is what makes the draft node idempotent — a re-run within a
 round targets the same version and rewrites it instead of inserting a second
 report.
 
-### Recovery from abrupt worker death
+### Recovery after a worker dies
 
 A worker killed with SIGKILL never runs its release path. The task lock
 therefore runs on a short TTL refreshed by a heartbeat, so a dead worker's
 lock expires in minutes; a cron sweep then re-queues tasks that look stalled
-and hold no lock. A task a live worker owns is left alone — adopting it would
-create the second writer the lock exists to prevent — and tasks awaiting
-approval are never adopted, since re-running one would discard the report
-under review.
+and hold no lock.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W1 as Worker A (dies)
+    participant Q as Redis
+    participant DB as PostgreSQL
+    participant C as Cron sweep
+    participant W2 as Worker B
+
+    W1->>Q: lock task:{id} (TTL 180s)
+    loop every 60s while alive
+        W1->>Q: heartbeat, extend TTL
+    end
+    W1->>DB: checkpoint after each node
+    Note over W1: SIGKILL — no release path runs
+
+    Note over Q: no heartbeat — the lock expires
+    C->>DB: find tasks queued/running, stalled > 120s
+    C->>Q: is the lock still held?
+    Q-->>C: no
+    C->>Q: re-enqueue run_task(id)
+    Q->>W2: run_task(id)
+    W2->>DB: load checkpoint
+    Note over W2: resumes after the last checkpointed node
+```
+
+A task a live worker still owns is left alone — adopting it would create the
+second writer the lock exists to prevent — and a task awaiting approval is
+never adopted, because re-running it would discard the report under review.
+
+A node interrupted *between finishing and being checkpointed* does re-run.
+That is correct and visible: the re-run is recorded as a new attempt, and the
+timeline shows both.
+
+## The model gateway
+
+One provider-agnostic port (`app.adapters.llm`) over the OpenAI-compatible
+Chat Completions shape, with OpenRouter as the default gateway.
+
+| Concern | Where |
+|---|---|
+| The port every node calls | `app/adapters/llm/base.py` (`LLMClient`) |
+| The only module importing a vendor SDK | `app/adapters/llm/openai_compat.py` |
+| Deterministic offline implementation | `app/adapters/llm/stub.py` |
+| Catalogue, capability validation, pricing | `app/adapters/llm/capabilities.py` |
+| Per-node model resolution | `app/core/config.py` (`NODE_MODEL_ENV_VARS`) |
+
+Four properties worth stating:
+
+**No model ID appears in application code.** Each node's model resolves from an
+environment variable, validated against the provider's catalogue at startup, so
+an unknown or incapable model fails the boot rather than the hundredth request.
+A pre-commit hook rejects a hardcoded model ID outside the adapter.
+
+**Structured output is negotiated, not assumed.** Three tiers — native JSON
+Schema, forced tool call, prompt-and-parse — and with
+`LLM_REQUIRE_STRUCTURED_OUTPUT=true` (the live default) anything below tier one
+is refused rather than silently downgraded (ADR-008).
+
+**Spend is bounded before the call.** Per-task token and call budgets are
+checked ahead of each request, and `LLM_FREE_MODELS_ONLY` refuses any model
+with non-zero published pricing — checking every pricing field, because a
+non-zero request fee makes a nominally free model billable.
+
+**Every call is recorded.** `llm_calls` holds the model requested, the model
+served, the company that served it, the output tier used, tokens, latency,
+cost and outcome. The report's limitations section is generated from those
+rows, so it cannot drift from what actually happened.
 
 ## The search layer
 
