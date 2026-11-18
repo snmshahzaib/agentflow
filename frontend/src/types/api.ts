@@ -83,10 +83,12 @@ export interface ClaimView {
   source_labels: string[]
 }
 
+export type ReportStatus = 'draft' | 'approved' | 'superseded'
+
 export interface ReportView {
   id: string
   version: number
-  status: 'draft' | 'approved' | 'superseded'
+  status: ReportStatus
   content_markdown: string
   created_at: string
 }

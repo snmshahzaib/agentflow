@@ -57,8 +57,23 @@ export class Dashboard {
     })
   }
 
+  /** Open one of the detail sections. */
+  async openTab(name: 'Report' | 'Sources' | 'Claims' | 'Workflow'): Promise<void> {
+    await this.page.getByRole('tab', { name: new RegExp(`^${name}`) }).click()
+    await expect(this.page.getByRole('tabpanel')).toBeVisible()
+  }
+
+  /** The polite live region that reports workflow progress. */
+  get progress(): Locator {
+    return this.detail.getByRole('group', { name: 'Workflow progress' }).getByRole('status')
+  }
+
+  get panel(): Locator {
+    return this.page.getByRole('tabpanel')
+  }
+
   stage(name: string): Locator {
-    return this.detail.getByRole('listitem').filter({ hasText: name })
+    return this.panel.getByRole('listitem').filter({ hasText: name })
   }
 
   get approveButton(): Locator {
@@ -75,6 +90,36 @@ export class Dashboard {
 
   get exportLink(): Locator {
     return this.page.getByRole('link', { name: /download markdown/i })
+  }
+}
+
+/**
+ * Create a task through the API and wait for it to park at the approval gate.
+ *
+ * Specs that are about the *interface* -- navigation, accessibility, layout --
+ * need a finished task to look at, not a demonstration that the workflow
+ * runs; the journey spec already proves that through the UI. `page.request`
+ * carries the page's cookies, so the task belongs to the session the browser
+ * is using.
+ */
+export async function seedApprovedGateTask(
+  page: Page,
+  question = DEMO_QUESTION,
+): Promise<string> {
+  const created = await page.request.post('/api/tasks', { data: { question } })
+  if (!created.ok()) {
+    throw new Error(`seeding failed: ${created.status()} ${await created.text()}`)
+  }
+  const { id } = (await created.json()) as { id: string }
+
+  const deadline = Date.now() + 60_000
+  for (;;) {
+    const detail = await page.request.get(`/api/tasks/${id}`)
+    const { status } = (await detail.json()) as { status: string }
+    if (status === 'awaiting_approval') return id
+    if (status === 'failed') throw new Error(`seeded task ${id} failed`)
+    if (Date.now() > deadline) throw new Error(`seeded task ${id} stuck in ${status}`)
+    await page.waitForTimeout(500)
   }
 }
 

@@ -33,6 +33,160 @@
   }
 }
 
+/* Report Markdown. Scoped to .md so these element selectors cannot leak into
+   the application chrome. Sized down from browser defaults: a report is read
+   inside a panel, not as a standalone document. */
+@layer components {
+  .md {
+    font-size: 0.875rem;
+    line-height: 1.65;
+  }
+
+  .md > :first-child {
+    margin-top: 0;
+  }
+
+  /* Heading levels are shifted down by the renderer so a report nests under
+     the page outline, so these style by depth-within-the-report (h3 is the
+     report's own title) rather than by nominal level. */
+  .md h3,
+  .md h4,
+  .md h5,
+  .md h6 {
+    font-weight: 600;
+    line-height: 1.3;
+    margin-block: 1.4em 0.5em;
+    text-wrap: balance;
+  }
+
+  .md h3 {
+    font-size: 1.35rem;
+    letter-spacing: -0.01em;
+  }
+
+  .md h4 {
+    font-size: 1.1rem;
+    border-bottom: 1px solid var(--color-line);
+    padding-bottom: 0.3em;
+  }
+
+  .md h5 {
+    font-size: 0.95rem;
+  }
+
+  .md h6 {
+    font-size: 0.875rem;
+    color: var(--color-ink-muted);
+  }
+
+  .md p,
+  .md ul,
+  .md ol,
+  .md blockquote,
+  .md pre {
+    margin-block: 0.75em;
+  }
+
+  .md ul,
+  .md ol {
+    padding-inline-start: 1.5em;
+  }
+
+  .md ul {
+    list-style: disc;
+  }
+
+  .md ol {
+    list-style: decimal;
+  }
+
+  .md li {
+    margin-block: 0.3em;
+  }
+
+  .md li::marker {
+    color: var(--color-ink-muted);
+  }
+
+  .md a {
+    color: var(--color-accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    overflow-wrap: anywhere;
+  }
+
+  .md strong {
+    font-weight: 600;
+  }
+
+  .md code {
+    background-color: var(--color-surface-muted);
+    border-radius: 0.25rem;
+    font-size: 0.85em;
+    padding: 0.1em 0.35em;
+  }
+
+  .md pre {
+    background-color: var(--color-surface-muted);
+    border: 1px solid var(--color-line);
+    border-radius: 0.5rem;
+    overflow-x: auto;
+    padding: 0.75rem;
+  }
+
+  .md pre code {
+    background: none;
+    padding: 0;
+  }
+
+  /* The provenance notice is emitted as a blockquote, and it is the first
+     thing a reader should see. */
+  .md blockquote {
+    border-inline-start: 3px solid var(--color-caution);
+    background-color: color-mix(in oklab, var(--color-caution) 8%, transparent);
+    border-radius: 0 0.5rem 0.5rem 0;
+    padding: 0.6rem 0.9rem;
+  }
+
+  .md blockquote p {
+    margin-block: 0.3em;
+  }
+
+  /* Reports carry a claim-support table, which is the densest thing here and
+     the most likely to overflow a narrow screen. It scrolls in its own box
+     rather than widening the page. */
+  .md .md-table-scroll {
+    overflow-x: auto;
+    margin-block: 1em;
+  }
+
+  .md table {
+    border-collapse: collapse;
+    font-size: 0.8125rem;
+    min-width: 100%;
+  }
+
+  .md th,
+  .md td {
+    border: 1px solid var(--color-line);
+    padding: 0.4rem 0.6rem;
+    text-align: start;
+    vertical-align: top;
+  }
+
+  .md th {
+    background-color: var(--color-surface-muted);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .md hr {
+    border: 0;
+    border-top: 1px solid var(--color-line);
+    margin-block: 1.5em;
+  }
+}
+
 @layer base {
   html {
     -webkit-text-size-adjust: 100%;

@@ -24,6 +24,30 @@ export function Spinner({ label }: { label: string }) {
   )
 }
 
+/**
+ * Loading placeholder shaped like the content it replaces.
+ *
+ * Preferred over a bare spinner for panels: the layout does not jump when
+ * data arrives, and the screen says what is coming rather than only that
+ * something is happening. The visible bars are decorative; the accessible
+ * name carries the message.
+ */
+export function Skeleton({ lines = 3, label }: { lines?: number; label: string }) {
+  return (
+    <div role="status" aria-busy="true" aria-label={label}>
+      <div aria-hidden="true" className="space-y-2">
+        {Array.from({ length: lines }, (_, index) => (
+          <div
+            key={index}
+            className="h-3 animate-pulse rounded bg-surface-muted"
+            style={{ width: `${100 - index * 7}%` }}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function EmptyState({ title, body }: { title: string; body: string }) {
   return (
     <div className="rounded-xl border border-dashed border-line px-6 py-10 text-center">

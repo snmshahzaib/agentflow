@@ -1,27 +1,53 @@
 import { useState } from 'react'
 
-import { Card, EmptyState, ErrorState, Spinner } from '@/components/Primitives'
+import { Card, EmptyState, ErrorState, Skeleton } from '@/components/Primitives'
 import { StatusBadge } from '@/components/StatusBadge'
+import { TabPanel, Tabs } from '@/components/Tabs'
+import { ApprovalPanel } from '@/features/tasks/ApprovalPanel'
 import { ClaimsTable } from '@/features/tasks/ClaimsTable'
 import { ReportPanel } from '@/features/tasks/ReportPanel'
 import { SourcesPanel } from '@/features/tasks/SourcesPanel'
+import { StageProgress } from '@/features/tasks/StageProgress'
 import { WorkflowTimeline } from '@/features/tasks/WorkflowTimeline'
-import { useApproveTask, useRequestRevision, useSteps, useTask } from '@/hooks/useApi'
+import type { View } from '@/features/tasks/views'
+import { useClaims, useReport, useSources, useSteps, useTask } from '@/hooks/useApi'
 import { ApiError } from '@/services/api'
 
-export function TaskDetail({ taskId }: { taskId: string | null }) {
-  const [feedback, setFeedback] = useState('')
-  const [revisionError, setRevisionError] = useState<string | null>(null)
+/**
+ * One task, in detail.
+ *
+ * Tabbed rather than a single column of panels. The reviewer's job is to read
+ * a report and decide, and the evidence behind it is deep -- sources,
+ * per-claim verdicts, a stage timeline with retries. Stacking all of it made
+ * the primary task a scrolling exercise, and on a phone the approval controls
+ * ended up several screens below the report they apply to.
+ *
+ * The approval gate sits outside the tabs: it is the reason the page exists,
+ * and it must not be something a reviewer has to go and find.
+ */
+export function TaskDetail({
+  taskId,
+  view,
+  onViewChange,
+}: {
+  taskId: string | null
+  view: View
+  onViewChange: (view: View) => void
+}) {
+  const [readingVersion, setReadingVersion] = useState<number | undefined>(undefined)
+
   const task = useTask(taskId ?? undefined)
-  const steps = useSteps(taskId ?? undefined, task.data?.status)
-  const approve = useApproveTask(taskId ?? '')
-  const revise = useRequestRevision(taskId ?? '')
+  const status = task.data?.status
+  const steps = useSteps(taskId ?? undefined, status)
+  const sources = useSources(taskId ?? undefined, status)
+  const claims = useClaims(taskId ?? undefined, status, readingVersion)
+  const report = useReport(taskId ?? undefined, status)
 
   if (!taskId) {
     return (
       <EmptyState
         title="No task selected"
-        body="Choose a task from the list to see its workflow, provenance and approval gate."
+        body="Choose a task from the list, or submit a question to start one. Each task keeps its own workflow timeline, sources and report versions."
       />
     )
   }
@@ -29,7 +55,7 @@ export function TaskDetail({ taskId }: { taskId: string | null }) {
   if (task.isPending) {
     return (
       <Card>
-        <Spinner label="Loading task…" />
+        <Skeleton lines={8} label="Loading task…" />
       </Card>
     )
   }
@@ -47,39 +73,33 @@ export function TaskDetail({ taskId }: { taskId: string | null }) {
   }
 
   const detail = task.data
-  const canApprove = detail.status === 'awaiting_approval'
-  const approveError = approve.error instanceof ApiError ? approve.error : null
-  const reviseError = revise.error instanceof ApiError ? revise.error : null
+  const sourceCount = sources.data?.length ?? 0
+  const claimCount = claims.data?.length ?? 0
+  const unsupported = claims.data?.filter((c) => c.support_status === 'unsupported').length ?? 0
 
   return (
     <div className="space-y-4">
       <Card>
-        <div className="flex items-start justify-between gap-3">
-          <h2 className="text-base font-semibold">{detail.question}</h2>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <h2 className="min-w-0 flex-1 text-base font-semibold">{detail.question}</h2>
           <StatusBadge status={detail.status} />
         </div>
 
+        <div className="mt-4">
+          <StageProgress steps={steps.data ?? []} status={detail.status} />
+        </div>
+
         <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-4">
-          <div>
-            <dt className="text-xs text-ink-muted">Model provider</dt>
-            <dd className="font-mono text-xs">{detail.llm_provider}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-ink-muted">Search</dt>
-            <dd className="font-mono text-xs">{detail.search_mode}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-ink-muted">Model calls</dt>
-            <dd className="font-mono text-xs">
-              {detail.calls_used}/{detail.max_calls_budget}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-xs text-ink-muted">Tokens</dt>
-            <dd className="font-mono text-xs">
-              {detail.tokens_used.toLocaleString()}/{detail.max_tokens_budget.toLocaleString()}
-            </dd>
-          </div>
+          <Fact term="Model provider" value={detail.llm_provider} />
+          <Fact term="Search" value={detail.search_mode} />
+          <Fact
+            term="Model calls"
+            value={`${detail.calls_used}/${detail.max_calls_budget}`}
+          />
+          <Fact
+            term="Tokens"
+            value={`${detail.tokens_used.toLocaleString()}/${detail.max_tokens_budget.toLocaleString()}`}
+          />
         </dl>
 
         {detail.error_message ? (
@@ -93,123 +113,60 @@ export function TaskDetail({ taskId }: { taskId: string | null }) {
       </Card>
 
       <Card>
-        <WorkflowTimeline
-          steps={steps.data ?? []}
-          status={detail.status}
-          isLoading={steps.isFetching}
-        />
-      </Card>
-
-      <Card>
-        <h3 className="text-sm font-semibold">Sources</h3>
-        <div className="mt-3">
-          <SourcesPanel taskId={detail.id} status={detail.status} />
-        </div>
-      </Card>
-
-      <Card>
-        <h3 className="text-sm font-semibold">Claim support</h3>
-        <div className="mt-3">
-          <ClaimsTable taskId={detail.id} status={detail.status} />
-        </div>
-      </Card>
-
-      <Card>
-        <h3 className="text-sm font-semibold">Report</h3>
-        <div className="mt-3">
-          <ReportPanel taskId={detail.id} status={detail.status} />
-        </div>
-      </Card>
-
-      <Card>
         <h3 className="text-sm font-semibold">Approval gate</h3>
-        {canApprove ? (
-          <>
-            <p className="mt-1 text-sm text-ink-muted">
-              The workflow is paused and no process is waiting. Approving resumes it from its
-              last checkpoint.
-            </p>
-            <label htmlFor="feedback" className="mt-4 block text-sm font-medium">
-              Reviewer note <span className="font-normal text-ink-muted">(optional)</span>
-            </label>
-            <textarea
-              id="feedback"
-              rows={2}
-              value={feedback}
-              maxLength={2000}
-              onChange={(event) => setFeedback(event.target.value)}
-              className="mt-2 w-full resize-y rounded-lg border border-line bg-canvas px-3 py-2 text-sm"
-            />
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <button
-                type="button"
-                disabled={approve.isPending || revise.isPending}
-                onClick={() => approve.mutate(feedback.trim() || undefined)}
-                className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-accent-ink disabled:opacity-50"
-              >
-                Approve report
-              </button>
-              <button
-                type="button"
-                disabled={approve.isPending || revise.isPending}
-                onClick={() => {
-                  const note = feedback.trim()
-                  // Required, because a revision with no explanation gives
-                  // the workflow nothing to act on.
-                  if (note.length < 3) {
-                    setRevisionError('Add a note explaining what should change.')
-                    return
-                  }
-                  setRevisionError(null)
-                  revise.mutate(note, { onSuccess: () => setFeedback('') })
-                }}
-                className="rounded-lg border border-line px-4 py-2 text-sm font-medium hover:bg-surface-muted disabled:opacity-50"
-              >
-                Request revision
-              </button>
-              {approve.isPending ? <Spinner label="Approving…" /> : null}
-              {revise.isPending ? <Spinner label="Sending back…" /> : null}
-            </div>
-            <p className="mt-2 text-xs text-ink-muted">
-              A revision re-plans the research with your note, so it may retrieve different
-              sources and will produce a new report version.
-            </p>
-            {revisionError ? (
-              <p role="alert" className="mt-2 text-sm text-critical">
-                {revisionError}
-              </p>
-            ) : null}
-          </>
-        ) : (
-          <p className="mt-1 text-sm text-ink-muted">
-            {detail.status === 'approved'
-              ? 'This report was approved and can be exported as Markdown above.'
-              : 'Nothing to approve yet — the workflow has not reached the gate.'}
-          </p>
-        )}
-
-        {approveError ? (
-          <div className="mt-4">
-            <ErrorState
-              title="Could not approve"
-              message={approveError.message}
-              correlationId={approveError.correlationId}
-              onRetry={() => approve.reset()}
-            />
-          </div>
-        ) : null}
-
-        {reviseError ? (
-          <div className="mt-4">
-            <ErrorState
-              title="Could not request a revision"
-              message={reviseError.message}
-              correlationId={reviseError.correlationId}
-              onRetry={() => revise.reset()}
-            />
-          </div>
-        ) : null}
+        <div className="mt-2">
+          <ApprovalPanel task={detail} currentVersion={report.data?.version} />
+        </div>
       </Card>
+
+      <Card className="pt-3">
+        <Tabs
+          label="Task detail sections"
+          active={view}
+          onChange={(id) => onViewChange(id as View)}
+          tabs={[
+            { id: 'report', label: 'Report' },
+            { id: 'sources', label: 'Sources', badge: sourceCount || undefined },
+            {
+              id: 'claims',
+              label: 'Claims',
+              badge: claimCount ? `${claimCount}${unsupported ? ` · ${unsupported}!` : ''}` : undefined,
+            },
+            { id: 'workflow', label: 'Workflow' },
+          ]}
+        />
+
+        <div className="mt-4">
+          <TabPanel id="report" active={view}>
+            <ReportPanel
+              taskId={detail.id}
+              status={detail.status}
+              onVersionChange={setReadingVersion}
+            />
+          </TabPanel>
+
+          <TabPanel id="sources" active={view}>
+            <SourcesPanel taskId={detail.id} status={detail.status} />
+          </TabPanel>
+
+          <TabPanel id="claims" active={view}>
+            <ClaimsTable taskId={detail.id} status={detail.status} version={readingVersion} />
+          </TabPanel>
+
+          <TabPanel id="workflow" active={view}>
+            <WorkflowTimeline steps={steps.data ?? []} status={detail.status} />
+          </TabPanel>
+        </div>
+      </Card>
+    </div>
+  )
+}
+
+function Fact({ term, value }: { term: string; value: string }) {
+  return (
+    <div>
+      <dt className="text-xs text-ink-muted">{term}</dt>
+      <dd className="font-mono text-xs">{value}</dd>
     </div>
   )
 }

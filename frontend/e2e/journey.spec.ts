@@ -43,15 +43,28 @@ test.describe('research lifecycle', () => {
       await expect(app.taskList.getByRole('button', { name: new RegExp(DEMO_QUESTION.slice(0, 40), 'i') })).toBeVisible()
     })
 
+    await test.step('progress is reported while the workflow runs', async () => {
+      // Named stages, not just a spinner: the run takes minutes with live
+      // models, and "something is happening" is not progress.
+      // The polite live region, which is what a screen reader is told.
+      await expect(app.progress).toHaveText(
+        /Queued|Stage \d of 5|stages complete/,
+      )
+    })
+
     await test.step('every workflow stage is visible and reaches success', async () => {
       await app.waitForApprovalGate()
+      await expect(app.progress).toHaveText(/All stages complete/)
+      await app.openTab('Workflow')
       for (const stage of ['Plan', 'Retrieve sources', 'Analyse', 'Check citations', 'Draft report']) {
         await expect(app.stage(stage).getByText('Succeeded')).toBeVisible()
       }
     })
 
     await test.step('retrieved sources are shown and labelled as fixtures', async () => {
-      const sources = app.detail.getByRole('listitem').filter({ hasText: FIXTURE_HOST })
+      await app.openTab('Sources')
+      await expect(app.panel.getByText(/from the committed fixture corpus/)).toBeVisible()
+      const sources = app.panel.getByRole('listitem').filter({ hasText: FIXTURE_HOST })
       expect(await sources.count()).toBeGreaterThan(0)
       // Exact: the fixture URLs themselves contain the word "fixtures", so a
       // substring match would also hit every source link.
@@ -59,14 +72,31 @@ test.describe('research lifecycle', () => {
     })
 
     await test.step('claim support is shown, and is not described as fact checking', async () => {
-      await expect(app.detail.getByText(/confirms a source/i)).toBeVisible()
-      await expect(app.detail.getByText(/not that the claim is true/i).first()).toBeVisible()
+      await app.openTab('Claims')
+      await expect(app.panel.getByText(/confirms a source/i)).toBeVisible()
+      await expect(app.panel.getByText(/not that the claim is true/i).first()).toBeVisible()
+      await expect(app.panel.getByRole('list', { name: /claim support summary/i })).toBeVisible()
     })
 
-    await test.step('the report is readable but export is locked before approval', async () => {
-      await expect(app.detail.getByText(/^Version 1/)).toBeVisible()
+    await test.step('the report renders as a document, not as Markdown source', async () => {
+      await app.openTab('Report')
+      await expect(app.panel.getByText('Version 1')).toBeVisible()
+      // Real headings and a real table, so the claim-support table is
+      // navigable rather than a wall of pipes.
+      await expect(app.panel.getByRole('heading', { level: 4, name: /sources/i })).toBeVisible()
+      await expect(app.panel.getByRole('table')).toBeVisible()
+      await expect(app.panel.getByRole('heading', { level: 4, name: /limitations/i })).toBeVisible()
+    })
+
+    await test.step('the exact Markdown that will be exported is inspectable', async () => {
+      await app.panel.getByRole('button', { name: /show markdown source/i }).click()
+      await expect(app.panel.getByText(/^## Limitations$/m)).toBeVisible()
+      await app.panel.getByRole('button', { name: /show rendered/i }).click()
+    })
+
+    await test.step('export is locked before approval', async () => {
       await expect(app.exportLink).toHaveCount(0)
-      await expect(app.detail.getByText(/export unlocks after approval/i)).toBeVisible()
+      await expect(app.panel.getByText(/export unlocks after approval/i)).toBeVisible()
     })
 
     await test.step('a revision without a note is refused by the client', async () => {
@@ -77,9 +107,21 @@ test.describe('research lifecycle', () => {
     await test.step('a revision with a note produces a second version', async () => {
       await app.reviewerNote.fill('Say more about operational burden for a small team.')
       await app.revisionButton.click()
-      // The task leaves the gate, re-runs, and comes back with v2.
-      await expect(app.detail.getByText(/^Version 2/)).toBeVisible({ timeout: 60_000 })
       await app.waitForApprovalGate()
+      // The task leaves the gate, re-runs, and comes back with a v2 the
+      // reviewer can switch between.
+      const versions = app.panel.getByRole('group', { name: /report version/i })
+      await expect(versions).toBeVisible({ timeout: 60_000 })
+      await expect(versions.getByRole('button', { name: 'v2' })).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      )
+    })
+
+    await test.step('the superseded version is still readable, and labelled', async () => {
+      await app.panel.getByRole('button', { name: 'v1' }).click()
+      await expect(app.panel.getByText(/superseded by version 2/i)).toBeVisible()
+      await app.panel.getByRole('button', { name: 'v2' }).click()
     })
 
     await test.step('approving unlocks the export', async () => {
