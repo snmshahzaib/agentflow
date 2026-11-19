@@ -403,6 +403,7 @@ verified, what was not, and what went wrong.
 | [`SECURITY.md`](SECURITY.md) | What the design guarantees, and how to report an issue |
 | [`docs/milestones/m6-report.md`](docs/milestones/m6-report.md) | What M6 verified, and what it found wrong |
 | [`docs/milestones/m7a-report.md`](docs/milestones/m7a-report.md) | Hosting assessment and the five security gates |
+| [`docs/milestones/m7b-publication-readiness.md`](docs/milestones/m7b-publication-readiness.md) | Security audit and publication checklist |
 | [`docs/development.md`](docs/development.md) | Running outside Docker |
 
 ## Licence
