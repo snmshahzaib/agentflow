@@ -1,0 +1,24 @@
+name: Documentation correction
+description: Something documented does not match what the code does
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        These are the most welcome reports of all. The project's premise is that its
+        claims can be checked, so a claim that does not hold is a real defect.
+
+  - type: input
+    id: location
+    attributes:
+      label: Where
+      placeholder: "README.md, the testing table / docs/architecture.md, the sequence diagram"
+    validations:
+      required: true
+
+  - type: textarea
+    id: mismatch
+    attributes:
+      label: What it says, and what is actually true
+    validations:
+      required: true

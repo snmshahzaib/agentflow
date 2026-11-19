@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/snmshahzaib/agentflow/security/advisories/new
+    about: Please report privately rather than in a public issue. See SECURITY.md.
+  - name: What this project does and does not claim
+    url: https://github.com/snmshahzaib/agentflow#known-limitations
+    about: Known limitations, including that nothing is deployed and no performance figures exist.

@@ -1,0 +1,49 @@
+name: Bug report
+description: Something does not behave as documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. The most useful reports are the ones where the
+        documentation and the behaviour disagree — please say which you expected.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+      placeholder: |
+        1. docker compose up --build
+        2. Submitted "..."
+        3. Expected the task to reach the approval gate; it stayed queued.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: profile
+    attributes:
+      label: Which profile
+      description: The default is the offline one, which needs no credentials.
+      options:
+        - Offline (LLM_PROVIDER=stub, SEARCH_PROVIDER=fixture)
+        - Live models (OpenRouter)
+        - Live search (Tavily)
+        - Both live
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: |
+        `docker compose logs api worker --tail 50`, or the failing test output.
+        **Please check it for API keys before pasting.**
+      render: text
+
+  - type: input
+    id: version
+    attributes:
+      label: Commit
+      description: "`git rev-parse --short HEAD`"

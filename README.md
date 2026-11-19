@@ -6,7 +6,7 @@ Submit a research question. Five graph stages plan it, retrieve evidence, synthe
 check every claim against the sources actually retrieved, and draft a report. The workflow then
 **pauses for a human** — and nothing can be exported until a reviewer approves it.
 
-> **Status: in active development — Milestone 7A of 8.** Everything documented here is
+> **Status: in active development — Milestone 7B of 8.** Everything documented here is
 > implemented and verified; the status table below says what is not. The application has never
 > run anywhere but a local Docker host.
 
@@ -172,20 +172,44 @@ Every published port is configurable in `.env` (`API_PORT`, `FRONTEND_PORT`,
 `POSTGRES_HOST_PORT`, `REDIS_HOST_PORT`), which matters if you already run Postgres or Redis
 locally.
 
-<details>
-<summary><strong>Running with live providers</strong></summary>
+### Running with live providers (optional, still free)
 
-Set `LLM_PROVIDER=openrouter` with `LLM_API_KEY`, and/or `SEARCH_PROVIDER=tavily` with
-`SEARCH_API_KEY`. To run real models without spending anything, use the free development
-profile documented in [`docs/model-configuration.md`](docs/model-configuration.md):
-`LLM_FREE_MODELS_ONLY=true` refuses any model with non-zero published pricing, at startup and
-before every call, so a billable request cannot be made by accident.
+The offline profile is the default and needs nothing. To run against real models and the real
+web:
 
-Free endpoints are slow, rate-limited, and materially weaker; they exist to exercise the
-workflow, not to produce output worth relying on. No security control or structured-output
+```bash
+# Models, via OpenRouter — any OpenAI-compatible gateway works
+LLM_PROVIDER=openrouter
+LLM_API_KEY=<your key>
+LLM_MODEL_DEFAULT=<a model id>       # no model ID is hardcoded anywhere
+LLM_FREE_MODELS_ONLY=true            # refuses anything with non-zero pricing
+
+# Live web research, via Tavily
+SEARCH_PROVIDER=tavily
+SEARCH_API_KEY=<your key>
+```
+
+Both have free allowances that need no payment card. `LLM_FREE_MODELS_ONLY=true` refuses any
+model with non-zero published pricing — at startup *and* before every call, checking every
+pricing field, because a non-zero request fee makes a nominally free model billable. Full
+matrix in [`docs/model-configuration.md`](docs/model-configuration.md).
+
+**What was actually verified live** (M3/M4, free models only, $0.00 total):
+
+- A complete lifecycle on live providers: 17 real sources retrieved from the public web, 48
+  citation links of which **none resolved outside the sources actually retrieved**, a revision
+  round, approval and export.
+- Three distinct model vendors observed serving requests, recorded per call rather than
+  inferred from model IDs.
+- Every call used tier-one structured output; strict mode never silently downgraded.
+
+Free endpoints are slow, rate-limited and materially weaker. They exist to exercise the
+workflow, not to produce research worth relying on. No security control or structured-output
 requirement is relaxed to accommodate them.
 
-</details>
+**On a shared deployment, live research is gated.** Without a valid access code a task is
+forced onto the offline profile — downgraded, not refused — so a public demo keeps working and
+cannot spend anything.
 
 ## The demo workflow
 
@@ -220,6 +244,7 @@ Everything below is a measured result from a real run, not an estimate.
 | Backend unit | 282 | no database needed |
 | Backend integration | 170 | real Postgres and Redis |
 | **Backend total** | **452** | includes admission, abuse and concurrency suites |
+| Live abuse run | 21 checks | against the real stack, including a genuine Redis outage |
 | Frontend components | 58 | Vitest + Testing Library |
 | Browser end-to-end | 34 | Playwright against the **real stack**; Chromium, plus the critical journey on Firefox |
 | Accessibility | — | axe-core: **zero** WCAG 2.1 A/AA violations across five views |
@@ -234,6 +259,7 @@ cd frontend && pnpm test && pnpm lint         # frontend
 scripts/e2e-test.sh                           # 34 browser tests, real stack
 scripts/smoke-test.sh http://localhost:8080   # submit → gate → approve
 scripts/restart-recovery-test.sh http://localhost:8080   # kill the worker, prove recovery
+scripts/abuse-check.sh http://localhost:8080  # limits, isolation, Redis outage
 make verify                                   # lint, types, boundaries, tests
 ```
 
@@ -270,9 +296,33 @@ downgraded, not asserted.
 is the deterministic stub, whose claims are fixed; what varies per case is the evidence. No
 figure here says anything about a live model's output.
 
-## Security
+## Security and abuse prevention
 
 Full detail in [`docs/security.md`](docs/security.md).
+
+### Admission control
+
+Four checks run before a task row is written or a job is queued, serialised by a Postgres
+advisory lock so they hold when requests arrive together rather than in turn:
+
+| Control | Behaviour |
+|---|---|
+| **Access code** | Gates live research. Without one, a task is forced onto the offline profile — downgraded, not refused. A deployment that forgets to configure a code is closed, not open. |
+| **Daily ceilings** | Deployment-wide task and spend limits per UTC day, counted with an upsert rather than read-modify-write. Spend comes from the ledger's own estimate. |
+| **Per-session limit** | Tasks one visitor may hold at once. Failed and cancelled tasks do not count — an outage must not become the visitor's quota problem. |
+| **Rate limiting** | Per session, per endpoint, with `Retry-After`. Fails **open** if Redis is unreachable, because a limiter that rejects when its own store is down turns a blip into an outage. |
+
+The admitted providers are written to the task row and **the worker obeys that record rather
+than re-reading configuration** — so a task admitted to the offline profile stays there even
+with live credentials loaded in the same process. That is the difference between a control and
+a suggestion.
+
+Verified against a running stack, not just with fakes: 12 simultaneous submissions from one
+session give exactly 5 accepted and 7 refused against a limit of 5; stopping Redis mid-flight
+leaves reads working, returns 503 with no broker detail leaked, and recovers without an API
+restart. `scripts/abuse-check.sh` runs all 21 checks.
+
+### Trust boundaries
 
 - **Retrieved content is untrusted input.** It is fenced and labelled as data, never placed in
   a system prompt, and the model is offered no tools at synthesis time.
@@ -328,8 +378,9 @@ Stated because a portfolio project that lists none is not being honest.
 | M4 | Live Tavily search, URL safety, rate limits, retention | complete |
 | M5 | Review UI, browser end-to-end tests, accessibility | complete |
 | M6 | Documentation, verification, evaluation harness | complete |
-| M7A | Deployment preparation, hosting assessment, security gates | **complete — awaiting review** |
-| M7B | Deployment and public repository | not started |
+| M7A | Deployment preparation, hosting assessment, security gates | complete |
+| M7B | Publication readiness | **complete — awaiting review** |
+| M8 | Completion report | not started |
 | M8 | Completion report | not started |
 
 Each milestone has a report in [`docs/milestones/`](docs/milestones/) recording what was
@@ -348,6 +399,8 @@ verified, what was not, and what went wrong.
 | [`docs/evaluation.md`](docs/evaluation.md) | The grounding harness and how to run it |
 | [`docs/deployment.md`](docs/deployment.md) | Hosting architecture, secret handling, health checks, rollback |
 | [`docs/decisions.md`](docs/decisions.md) | 20 architecture decision records |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to run the checks, and the house rules |
+| [`SECURITY.md`](SECURITY.md) | What the design guarantees, and how to report an issue |
 | [`docs/milestones/m6-report.md`](docs/milestones/m6-report.md) | What M6 verified, and what it found wrong |
 | [`docs/milestones/m7a-report.md`](docs/milestones/m7a-report.md) | Hosting assessment and the five security gates |
 | [`docs/development.md`](docs/development.md) | Running outside Docker |
