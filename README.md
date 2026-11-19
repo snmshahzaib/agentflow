@@ -6,7 +6,7 @@ Submit a research question. Five graph stages plan it, retrieve evidence, synthe
 check every claim against the sources actually retrieved, and draft a report. The workflow then
 **pauses for a human** — and nothing can be exported until a reviewer approves it.
 
-> **Status: in active development — Milestone 7B of 8.** Everything documented here is
+> **Status: in active development — Milestone 8 of 8.** Everything documented here is
 > implemented and verified; the status table below says what is not. The application has never
 > run anywhere but a local Docker host.
 
@@ -379,8 +379,8 @@ Stated because a portfolio project that lists none is not being honest.
 | M5 | Review UI, browser end-to-end tests, accessibility | complete |
 | M6 | Documentation, verification, evaluation harness | complete |
 | M7A | Deployment preparation, hosting assessment, security gates | complete |
-| M7B | Publication readiness | **complete — awaiting review** |
-| M8 | Completion report | not started |
+| M7B | Publication readiness | complete |
+| M8 | Final review and publication preparation | **complete — awaiting review** |
 | M8 | Completion report | not started |
 
 Each milestone has a report in [`docs/milestones/`](docs/milestones/) recording what was
@@ -403,7 +403,8 @@ verified, what was not, and what went wrong.
 | [`SECURITY.md`](SECURITY.md) | What the design guarantees, and how to report an issue |
 | [`docs/milestones/m6-report.md`](docs/milestones/m6-report.md) | What M6 verified, and what it found wrong |
 | [`docs/milestones/m7a-report.md`](docs/milestones/m7a-report.md) | Hosting assessment and the five security gates |
-| [`docs/milestones/m7b-publication-readiness.md`](docs/milestones/m7b-publication-readiness.md) | Security audit and publication checklist |
+| [`docs/milestones/m7b-publication-readiness.md`](docs/milestones/m7b-publication-readiness.md) | Security audit and publication readiness |
+| [`docs/milestones/m8-publication-checklist.md`](docs/milestones/m8-publication-checklist.md) | Final checklist: verified facts, and remaining risks |
 | [`docs/development.md`](docs/development.md) | Running outside Docker |
 
 ## Licence
