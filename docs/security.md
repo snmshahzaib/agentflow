@@ -80,20 +80,35 @@ Rate limiting is keyed by session rather than IP, and **fails open** if Redis is
 read endpoints are deliberately unlimited because polling is how the UI tracks progress
 (ADR-017).
 
-**Declared in configuration but NOT enforced.** These settings exist in `Settings` and
-`.env.example` and currently do nothing. They are listed here because a setting that looks
-like a safety control but is not wired up is worse than no setting at all:
+### Admission control
 
-| Setting | Intended control | Status |
+Four checks run **before** a task row is written or a job is queued
+(`app/services/admission.py`), serialised by a transaction-scoped Postgres advisory lock so
+they hold under concurrency:
+
+| Setting | Control | Enforced |
 |---|---|---|
-| `DEMO_DAILY_BUDGET_USD` | Daily USD ceiling across all visitors, HTTP 429 over budget | **not implemented** |
-| `DEMO_MAX_TASKS_PER_SESSION` | Cap on tasks one visitor may submit | **not implemented** |
-| `DEMO_ACCESS_CODE` | Gate live search behind a shared code | **not implemented** |
+| `DEMO_ACCESS_CODE` | Gates **live** research. Without a valid code a task is forced onto the deterministic offline profile — downgraded, not refused, so the public demo still works and cannot spend | yes |
+| `DEMO_DAILY_TASK_LIMIT` | Deployment-wide tasks per UTC day | yes |
+| `DEMO_DAILY_BUDGET_USD` | Deployment-wide spend per UTC day, read from the ledger's own estimate | yes |
+| `DEMO_MAX_TASKS_PER_SESSION` | Tasks one visitor may hold at once; failed and cancelled tasks do not count | yes |
 
-All three are guards for a *public* deployment, which does not exist yet. They must be
-implemented or removed before the application is exposed publicly; until then the controls
-that actually limit spend are the per-task token, call and search caps above, plus
-`LLM_FREE_MODELS_ONLY`.
+Three properties worth stating:
+
+**The decision is recorded, and the worker obeys the record.** Admitted providers are written
+to the task row, and the worker builds its dependencies from that row rather than re-reading
+configuration — so a task admitted to the offline profile stays there even with live
+credentials loaded in the same process.
+
+**A deployment that forgets to set a code is closed, not open.** With no code configured
+nothing matches, so nobody gets live research.
+
+**The code is compared with `hmac.compare_digest`**, and a wrong code is logged and
+downgraded rather than echoed back.
+
+Verified under concurrency: 12 simultaneous submissions from one session give exactly 5
+accepted and 7 refused against a limit of 5. Before the advisory lock, all 12 were admitted —
+a real race that the unit tests missed because they share a database session.
 
 ### Deployment blockers
 
@@ -102,15 +117,21 @@ reviewed and in place.** This list is the gate, not a wish list:
 
 | # | Blocker | State |
 |---|---|---|
-| 1 | Access control for live research (`DEMO_ACCESS_CODE` or equivalent) | **not implemented** |
-| 2 | Daily spend ceiling across all visitors (`DEMO_DAILY_BUDGET_USD`) | **not implemented** |
-| 3 | Per-session task limit (`DEMO_MAX_TASKS_PER_SESSION`) | **not implemented** |
-| 4 | Request rate limiting | implemented (ADR-017), needs review under real traffic |
-| 5 | Secret handling for a hosted environment — provider keys, `SESSION_SECRET` | not reviewed |
+| 1 | Access control for live research | **implemented and tested** (M7A) |
+| 2 | Daily usage and spend ceilings | **implemented and tested** (M7A) |
+| 3 | Per-session task limit | **implemented and tested** (M7A) |
+| 4 | Rate limiting under concurrency and Redis failure | **implemented and tested** (M7A) |
+| 5 | Secret handling for a hosted environment | **procedure written, never executed** |
 
-Items 1–3 are settings that currently do nothing. Item 4 exists and is tested but has only
-been exercised against a single local session. Item 5 is unstarted: the application has never
-run anywhere but a local Docker host.
+Items 1–4 are enforced at admission and verified against a running stack by
+`scripts/abuse-check.sh` (21 checks). Item 5 is documented in
+[`deployment.md`](deployment.md#secret-handling) but cannot be called done: no host exists, so
+nothing has been carried out. The application has still never run anywhere but a local Docker
+host.
+
+**The strongest form of item 5 is to need no secret at all.** With `LLM_PROVIDER=stub` and
+`SEARCH_PROVIDER=fixture` the public demo runs the complete workflow with no provider
+credential anywhere on the host.
 
 ## Frontend security
 

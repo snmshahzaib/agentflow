@@ -6,7 +6,7 @@ Submit a research question. Five graph stages plan it, retrieve evidence, synthe
 check every claim against the sources actually retrieved, and draft a report. The workflow then
 **pauses for a human** — and nothing can be exported until a reviewer approves it.
 
-> **Status: in active development — Milestone 6 of 8.** Everything documented here is
+> **Status: in active development — Milestone 7A of 8.** Everything documented here is
 > implemented and verified; the status table below says what is not. The application has never
 > run anywhere but a local Docker host.
 
@@ -218,8 +218,8 @@ Everything below is a measured result from a real run, not an estimate.
 | Suite | Count | Notes |
 |---|---|---|
 | Backend unit | 282 | no database needed |
-| Backend integration | 137 | real Postgres and Redis |
-| **Backend total** | **419** | 90% line coverage (2,699 statements) |
+| Backend integration | 170 | real Postgres and Redis |
+| **Backend total** | **452** | includes admission, abuse and concurrency suites |
 | Frontend components | 58 | Vitest + Testing Library |
 | Browser end-to-end | 34 | Playwright against the **real stack**; Chromium, plus the critical journey on Firefox |
 | Accessibility | — | axe-core: **zero** WCAG 2.1 A/AA violations across five views |
@@ -327,8 +327,9 @@ Stated because a portfolio project that lists none is not being honest.
 | M3 | Live OpenRouter gateway, free profile, cost ledger | complete |
 | M4 | Live Tavily search, URL safety, rate limits, retention | complete |
 | M5 | Review UI, browser end-to-end tests, accessibility | complete |
-| M6 | Documentation, verification, evaluation harness | **complete — awaiting review** |
-| M7 | Deployment and public repository | not started |
+| M6 | Documentation, verification, evaluation harness | complete |
+| M7A | Deployment preparation, hosting assessment, security gates | **complete — awaiting review** |
+| M7B | Deployment and public repository | not started |
 | M8 | Completion report | not started |
 
 Each milestone has a report in [`docs/milestones/`](docs/milestones/) recording what was
@@ -345,8 +346,10 @@ verified, what was not, and what went wrong.
 | [`docs/security.md`](docs/security.md) | Trust boundaries, injection containment, deployment gates |
 | [`docs/testing.md`](docs/testing.md) | Every suite, what it asserts, and the gaps |
 | [`docs/evaluation.md`](docs/evaluation.md) | The grounding harness and how to run it |
+| [`docs/deployment.md`](docs/deployment.md) | Hosting architecture, secret handling, health checks, rollback |
 | [`docs/decisions.md`](docs/decisions.md) | 20 architecture decision records |
 | [`docs/milestones/m6-report.md`](docs/milestones/m6-report.md) | What M6 verified, and what it found wrong |
+| [`docs/milestones/m7a-report.md`](docs/milestones/m7a-report.md) | Hosting assessment and the five security gates |
 | [`docs/development.md`](docs/development.md) | Running outside Docker |
 
 ## Licence

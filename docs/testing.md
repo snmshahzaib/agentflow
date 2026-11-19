@@ -11,9 +11,9 @@ authoritative.
 
 ```bash
 cd backend
-uv run pytest                        # all 419 offline tests (20 live ones skip)
+uv run pytest                        # all 452 offline tests (20 live ones skip)
 uv run pytest -m "not integration"   # 282 tests, no Postgres or Redis needed
-uv run pytest -m integration         # 137 tests, needs Postgres + Redis
+uv run pytest -m integration         # 170 tests, needs Postgres + Redis
 uv run pytest --cov=app --cov-report=term
 uv run pytest tests/test_llm_registry.py::TestStubRuntime -q   # one class
 ```
@@ -55,9 +55,9 @@ scripts/restart-recovery-test.sh     # worker restart recovery, real Docker
 
 | Suite | Count | Result |
 |---|---|---|
-| Backend unit (`-m "not integration"`) | 282 | pass in 8.9 s |
-| Backend integration (Postgres + Redis) | 137 | pass in 91.9 s |
-| **Backend total (offline)** | **419** | **pass** (20 live tests skipped) |
+| Backend unit (`-m "not integration"`) | 282 | pass in 7.7 s |
+| Backend integration (Postgres + Redis) | 170 | pass in 233 s |
+| **Backend total (offline)** | **452** | **pass** (20 live tests skipped) |
 | Live models (`-m live`, free profile) | 10 | **all pass**, $0.00 spend |
 | Live search (`-m "live_search and not live_models"`) | 9 | **all pass** |
 | Live full lifecycle (`-m live_models`) | 1 | **pass** — 8 model calls, 8 searches |
@@ -391,6 +391,32 @@ scripts/with-services.sh uv run python scripts/run_evals.py
 Eleven tests in `test_evaluation.py` enforce it: eight prove each metric can
 actually fail (a metric that cannot fail measures nothing), three run the
 suite through the real graph.
+
+## Abuse and failure behaviour
+
+Two layers, because fakes and a real stack prove different things.
+
+**In the suite** (`test_admission.py`, `test_abuse.py`, 35 tests): the four
+admission gates including concurrency on separate connections, cross-session
+access on all eight task routes, limits through HTTP, a dead queue, and error
+responses checked for leaked configuration.
+
+**Against the running stack** (`scripts/abuse-check.sh`, 21 checks):
+
+```bash
+scripts/e2e-stack.sh up
+scripts/abuse-check.sh http://localhost:8080
+```
+
+It refuses to run against anything but the offline profile, so it cannot
+hammer a live deployment. It covers concurrent submissions from one session,
+isolation between sessions, burst refusal, a genuine `docker compose stop
+redis` — the limiter fails open, the submission returns 503 with no broker
+detail, readiness flips — and recovery without restarting the API.
+
+It found the bug the unit tests could not: twelve simultaneous submissions
+from one session were all admitted against a limit of five, because the unit
+tests share a database session and that serialises them for free.
 
 ## Documentation audit
 
