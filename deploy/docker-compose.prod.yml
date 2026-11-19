@@ -1,0 +1,106 @@
+# Production overlay.
+#
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml up -d
+#
+# What it changes, and why each change matters:
+#
+#   * Postgres and Redis stop publishing host ports. In development they are
+#     published so tests can reach them; on a public host that would expose a
+#     database to the internet, and a Docker published port bypasses many
+#     host firewalls because it is a DNAT rule rather than an INPUT rule.
+#   * The API and frontend bind to localhost only. Caddy terminates TLS and
+#     proxies to them, so nothing listens on a public interface except Caddy.
+#   * Restart policies become `always`, so a reboot brings the stack back.
+#   * Memory limits are set, so one runaway container cannot take the host
+#     down with it.
+#   * Logs are capped. An unbounded json-file driver filling the disk is a
+#     boring and common way to lose a small deployment.
+
+services:
+  postgres:
+    # No `ports:` key: an overlay cannot remove or replace one. The bind
+    # address is supplied through POSTGRES_HOST_PORT, which the base file
+    # substitutes whole -- "127.0.0.1:5433" becomes "127.0.0.1:5433:5432".
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    restart: always
+    # Persistence matters: Redis holds the job queue. Losing it mid-run would
+    # strand queued tasks until the orphan sweep re-queues them.
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    logging: *logging
+
+  migrate:
+    logging: *logging
+
+  api:
+    restart: always
+    # No `ports:` here. Compose *merges* port lists rather than replacing
+    # them, so an overlay entry is appended and the base file's public
+    # binding survives -- which was verified to leave 0.0.0.0:8000 open
+    # alongside the localhost one. The bind address comes from API_PORT
+    # instead (see deploy/.env.production.example).
+    environment:
+      APP_ENV: production
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    logging: *logging
+
+  worker:
+    restart: always
+    environment:
+      APP_ENV: production
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+    logging: *logging
+
+  frontend:
+    restart: always
+    # Same as the API: the bind address is set through FRONTEND_PORT, not by
+    # an overlay `ports:` entry that would merely be appended.
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+    logging: *logging
+
+  caddy:
+    image: caddy:2-alpine
+    restart: always
+    depends_on:
+      - frontend
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DEPLOY_DOMAIN: ${DEPLOY_DOMAIN:?set DEPLOY_DOMAIN to the public hostname}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+      - caddyconfig:/config
+    logging: *logging
+
+volumes:
+  redisdata:
+  caddydata:
+  caddyconfig:

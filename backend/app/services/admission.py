@@ -45,6 +45,10 @@ from app.domain.errors import (
 
 log = get_logger(__name__)
 
+#: Arbitrary but fixed: one lock namespace for admission decisions. Chosen by
+#: hand rather than hashed from a string so it is greppable and stable.
+_ADMISSION_LOCK_KEY = 4_153_001
+
 #: Statuses that still count against a visitor's allowance. A failed or
 #: cancelled task does not: it produced nothing, and holding it against the
 #: visitor would turn our outage into their problem.
@@ -94,10 +98,28 @@ class AdmissionService:
             DemoBudgetExceededError: the deployment's daily spend ceiling is reached.
             SessionTaskLimitError: this visitor already holds too many tasks.
         """
+        await self._serialise()
         today = datetime.now(UTC).date()
         await self._check_daily_ceilings(today)
         await self._check_session_limit(session_id)
         return self._choose_providers(access_code)
+
+    async def _serialise(self) -> None:
+        """Serialise admission across concurrent requests.
+
+        Every check here is read-then-write: count what exists, decide, then
+        insert. Under concurrency each request reads the same pre-insert state
+        and they all admit themselves -- which is not a theoretical race. A
+        burst of twelve simultaneous submissions from one session was admitted
+        in full against a limit of five, and the unit tests missed it because
+        they share a session, which serialises them for free.
+
+        A transaction-scoped advisory lock closes it. It is released on commit
+        or rollback with no cleanup path to forget, and admission is two small
+        reads, so serialising it costs microseconds at any traffic this
+        deployment will see.
+        """
+        await self._session.execute(select(func.pg_advisory_xact_lock(_ADMISSION_LOCK_KEY)))
 
     # -- the checks ------------------------------------------------------
 

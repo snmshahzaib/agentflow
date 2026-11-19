@@ -1,0 +1,33 @@
+# TLS terminator and the only public listener.
+#
+# Caddy obtains and renews a Let's Encrypt certificate automatically, which is
+# the entire reason it is here: the alternative is a certbot cron plus an
+# nginx reload hook, for a deployment that should not need either.
+
+{$DEPLOY_DOMAIN} {
+	encode zstd gzip
+
+	# The frontend container already serves the SPA and proxies /api to the
+	# API container, so one upstream keeps the browser on a single origin and
+	# leaves the session cookie's SameSite behaviour unchanged from
+	# development.
+	reverse_proxy frontend:80 {
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Real-IP {remote_host}
+	}
+
+	header {
+		# HSTS. Only safe once the domain is committed to HTTPS, which it is:
+		# Caddy redirects http->https by default.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		# The application's own CSP and friends are set by the frontend
+		# container; these are the ones that belong at the edge.
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

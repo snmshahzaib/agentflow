@@ -7,10 +7,13 @@ exercised is a number in a config file.
 
 from __future__ import annotations
 
+import asyncio
+import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -61,6 +64,18 @@ async def _seed_task(
     session.add(task)
     await session.flush()
     return task
+
+
+async def reset_today(session: AsyncSession) -> None:
+    """Clear the deployment-wide counter for today.
+
+    The daily ceilings are *deployment-wide* and counted in a table, so they
+    are the one piece of state these tests share. Most tests here run inside a
+    transaction that is rolled back; the concurrency tests commit for real,
+    because a race cannot be reproduced inside one transaction. Both therefore
+    start from a known day.
+    """
+    await session.execute(delete(DemoBudget).where(DemoBudget.day == datetime.now(UTC).date()))
 
 
 class TestLiveResearchIsGated:
@@ -151,6 +166,10 @@ class TestPerSessionLimit:
 
 class TestDailyCeilings:
     """A bad day costs a day, not a month."""
+
+    @pytest.fixture(autouse=True)
+    async def _clean_day(self, db_session: AsyncSession) -> None:
+        await reset_today(db_session)
 
     async def _budget_row(self, session: AsyncSession) -> DemoBudget | None:
         return await session.get(DemoBudget, datetime.now(UTC).date())
@@ -259,6 +278,98 @@ class TestTheWorkerHonoursTheRecordedDecision:
         assert stored is not None
         assert stored.llm_provider is LLMProvider.STUB
         assert stored.search_mode is SearchMode.FIXTURE
+
+
+class TestConcurrentAdmission:
+    """The limits must hold when requests arrive together, not just in turn.
+
+    This is a regression test for a bug the live abuse check found and the
+    rest of this file missed: twelve simultaneous submissions from one session
+    were all admitted against a limit of five. Every check here is
+    read-then-write, and the other tests share a single database session,
+    which serialises them for free and hides the race.
+
+    So these use **separate connections**, which is the only way to reproduce
+    it.
+    """
+
+    async def _admit_on_own_connection(
+        self, database_url: str, settings: Settings, session_id: str
+    ) -> str:
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import NullPool
+
+        engine = create_async_engine(database_url, poolclass=NullPool)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        try:
+            async with factory() as session:
+                try:
+                    service = AdmissionService(session, settings)
+                    await service.admit(session_id=session_id)
+                    await _seed_task(session, session_id=session_id)
+                    await service.record_task_started()
+                    await session.commit()
+                    return "admitted"
+                except (SessionTaskLimitError, DemoTaskLimitError, DemoBudgetExceededError):
+                    await session.rollback()
+                    return "refused"
+        finally:
+            await engine.dispose()
+
+    async def test_the_per_session_limit_holds_under_concurrency(
+        self, migrated_database: str
+    ) -> None:
+        settings = offline_settings(demo_max_tasks_per_session=5, demo_daily_task_limit=1000)
+        session_id = f"sess-{uuid.uuid4().hex[:8]}"
+
+        outcomes = await asyncio.gather(
+            *(
+                self._admit_on_own_connection(migrated_database, settings, session_id)
+                for _ in range(12)
+            )
+        )
+
+        assert outcomes.count("admitted") == 5, outcomes
+        assert outcomes.count("refused") == 7
+
+    @pytest.fixture(autouse=True)
+    async def _isolate_the_day(self, migrated_database: str) -> AsyncIterator[None]:
+        """Reset the day's counter before *and* after.
+
+        These tests commit, unlike the rest of the suite, so without the
+        cleanup they leave a row behind that fails an unrelated schema test
+        asserting one row per day can be inserted. Found by running the suite
+        in random order.
+        """
+        await self._reset_committed_day(migrated_database)
+        yield
+        await self._reset_committed_day(migrated_database)
+
+    async def _reset_committed_day(self, database_url: str) -> None:
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import NullPool
+
+        engine = create_async_engine(database_url, poolclass=NullPool)
+        try:
+            async with async_sessionmaker(engine)() as session, session.begin():
+                await reset_today(session)
+        finally:
+            await engine.dispose()
+
+    async def test_the_daily_ceiling_holds_under_concurrency(self, migrated_database: str) -> None:
+        settings = offline_settings(demo_daily_task_limit=4, demo_max_tasks_per_session=50)
+
+        outcomes = await asyncio.gather(
+            *(
+                self._admit_on_own_connection(
+                    migrated_database, settings, f"sess-{uuid.uuid4().hex[:8]}"
+                )
+                for _ in range(10)
+            )
+        )
+
+        # The ceiling is deployment-wide, so distinct sessions share it.
+        assert outcomes.count("admitted") == 4, outcomes
 
 
 class TestAdmissionRunsBeforeAnythingIsWritten:
